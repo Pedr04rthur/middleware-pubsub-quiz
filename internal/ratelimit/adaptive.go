@@ -30,9 +30,15 @@ type Config struct {
 	PenaltyFactor float64
 	// RecoveryFactor multiplica a taxa a cada intervalo bem-comportado, até voltar ao normal.
 	RecoveryFactor float64
-	// MaxNoisyIntervals é quantos intervalos barulhentos seguidos levam à
-	// desconexão do cliente. Zero desativa a desconexão.
+	// MaxNoisyIntervals é quantos intervalos barulhentos seguidos levam ao
+	// bloqueio do cliente. Zero desativa o bloqueio.
 	MaxNoisyIntervals int
+
+	// IdleTimeout é quanto tempo sem mensagens até o cliente ser esquecido.
+	// Em UDP não há aviso de desconexão, então sem isso a tabela de clientes
+	// cresceria para sempre. Um cliente bloqueado só é esquecido (e desbloqueado)
+	// depois de ficar em silêncio por esse tempo. Zero desativa a remoção.
+	IdleTimeout time.Duration
 }
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo.
@@ -47,6 +53,7 @@ func DefaultConfig() Config {
 		PenaltyFactor:     0.5,
 		RecoveryFactor:    1.25,
 		MaxNoisyIntervals: 10,
+		IdleTimeout:       30 * time.Second,
 	}
 }
 
@@ -58,18 +65,20 @@ const (
 	Allowed Decision = iota
 	// Throttled indica que a mensagem deve ser descartada.
 	Throttled
-	// Disconnect indica que o cliente abusou repetidamente e deve ser desconectado.
-	Disconnect
+	// Blocked indica que o cliente abusou repetidamente: suas mensagens devem
+	// ser ignoradas (e, se houver conexão, ela deve ser encerrada).
+	Blocked
 )
 
-// Client guarda o Token Bucket individual de uma conexão e seu histórico de abuso.
+// Client guarda o Token Bucket individual de um cliente e seu histórico de abuso.
 type Client struct {
 	ID      string
 	manager *Manager
 	bucket  *TokenBucket
 
 	rejected atomic.Int64
-	kicked   atomic.Bool
+	blocked  atomic.Bool
+	lastSeen atomic.Int64
 
 	// Campos abaixo só são acessados pelo Manager com manager.mu travado.
 	penalty        float64
@@ -79,9 +88,10 @@ type Client struct {
 // Allow verifica se a próxima mensagem do cliente pode passar.
 func (c *Client) Allow() Decision {
 	c.manager.received.Add(1)
+	c.lastSeen.Store(c.manager.now().UnixNano())
 
-	if c.kicked.Load() {
-		return Disconnect
+	if c.blocked.Load() {
+		return Blocked
 	}
 	if c.bucket.Allow() {
 		return Allowed
@@ -105,6 +115,7 @@ type Manager struct {
 	globalFactor float64
 
 	received atomic.Int64
+	now      func() time.Time
 }
 
 // NewManager cria um gerenciador com a configuração dada.
@@ -113,19 +124,38 @@ func NewManager(cfg Config) *Manager {
 		cfg:          cfg,
 		clients:      make(map[string]*Client),
 		globalFactor: 1,
+		now:          time.Now,
 	}
 }
 
-// Register cria o Token Bucket individual de um novo cliente.
+// Register retorna o Token Bucket individual do cliente, criando-o se ainda
+// não existir.
 func (m *Manager) Register(id string) *Client {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if c, ok := m.clients[id]; ok {
+		return c
+	}
 	c := &Client{ID: id, manager: m, penalty: 1}
+	c.lastSeen.Store(m.now().UnixNano())
 	rate, burst := m.limitsFor(c)
 	c.bucket = NewTokenBucket(rate, burst)
 	m.clients[id] = c
 	return c
+}
+
+// Allow verifica a mensagem do cliente identificado por id (em UDP, o
+// endereço de origem do pacote), registrando-o no primeiro pacote.
+func (m *Manager) Allow(id string) Decision {
+	return m.Register(id).Allow()
+}
+
+// ClientCount retorna quantos clientes estão sendo acompanhados.
+func (m *Manager) ClientCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.clients)
 }
 
 // Unregister remove o cliente quando a conexão é encerrada.
@@ -160,7 +190,7 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 // adjust aplica os dois níveis de ajuste: o global (carga total do broker) e
-// o individual (penalidade para clientes barulhentos).
+// o individual (penalidade para clientes barulhentos), e esquece clientes inativos.
 func (m *Manager) adjust(elapsed time.Duration) {
 	seconds := elapsed.Seconds()
 	if seconds <= 0 {
@@ -173,7 +203,13 @@ func (m *Manager) adjust(elapsed time.Duration) {
 
 	m.updateGlobalFactor(load)
 
-	for _, c := range m.clients {
+	now := m.now()
+	for id, c := range m.clients {
+		if m.cfg.IdleTimeout > 0 && now.Sub(time.Unix(0, c.lastSeen.Load())) > m.cfg.IdleTimeout {
+			delete(m.clients, id)
+			continue
+		}
+
 		rejected := c.rejected.Swap(0)
 		if rejected >= int64(m.cfg.NoisyRejections) {
 			c.noisyIntervals++
@@ -184,7 +220,7 @@ func (m *Manager) adjust(elapsed time.Duration) {
 		}
 
 		if m.cfg.MaxNoisyIntervals > 0 && c.noisyIntervals >= m.cfg.MaxNoisyIntervals {
-			c.kicked.Store(true)
+			c.blocked.Store(true)
 		}
 
 		rate, burst := m.limitsFor(c)

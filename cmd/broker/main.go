@@ -56,7 +56,7 @@ func lidarComCliente(conn net.Conn, limitador *ratelimit.Manager) {
 		case ratelimit.Throttled:
 			fmt.Printf("Mensagem de %s descartada (limite atual: %.1f msgs/s)\n", enderecoCliente, cliente.Rate())
 			continue
-		case ratelimit.Disconnect:
+		case ratelimit.Blocked:
 			fmt.Println("Cliente desconectado por excesso de mensagens:", enderecoCliente)
 			fmt.Fprintln(conn, "ERRO: desconectado por excesso de mensagens")
 			return

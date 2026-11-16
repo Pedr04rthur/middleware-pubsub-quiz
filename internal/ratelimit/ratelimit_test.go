@@ -88,7 +88,7 @@ func TestNoisyClientIsPenalizedAndRecovers(t *testing.T) {
 	}
 }
 
-func TestPersistentNoisyClientIsDisconnected(t *testing.T) {
+func TestPersistentNoisyClientIsBlocked(t *testing.T) {
 	m := NewManager(testConfig())
 	c := m.Register("abusivo")
 
@@ -99,8 +99,51 @@ func TestPersistentNoisyClientIsDisconnected(t *testing.T) {
 		m.adjust(time.Second)
 	}
 
-	if got := c.Allow(); got != Disconnect {
-		t.Fatalf("cliente abusivo deveria ser desconectado, obtido %v", got)
+	if got := c.Allow(); got != Blocked {
+		t.Fatalf("cliente abusivo deveria ser bloqueado, obtido %v", got)
+	}
+}
+
+func TestAllowByAddressReusesClient(t *testing.T) {
+	m := NewManager(testConfig())
+
+	for i := 0; i < 10; i++ {
+		if got := m.Allow("10.0.0.1:5000"); got != Allowed {
+			t.Fatalf("pacote %d da rajada deveria passar, obtido %v", i, got)
+		}
+	}
+	if got := m.Allow("10.0.0.1:5000"); got != Throttled {
+		t.Fatalf("o mesmo endereço deveria compartilhar o balde, obtido %v", got)
+	}
+	if got := m.Allow("10.0.0.2:5000"); got != Allowed {
+		t.Fatalf("outro endereço deveria ter balde próprio, obtido %v", got)
+	}
+	if got := m.ClientCount(); got != 2 {
+		t.Fatalf("deveria haver 2 clientes, obtido %v", got)
+	}
+}
+
+func TestIdleClientsAreForgotten(t *testing.T) {
+	cfg := testConfig()
+	cfg.IdleTimeout = 30 * time.Second
+	m := NewManager(cfg)
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	m.now = clock.now
+
+	m.Allow("inativo")
+	m.Allow("ativo")
+
+	clock.advance(20 * time.Second)
+	m.Allow("ativo")
+	m.adjust(time.Second)
+	if got := m.ClientCount(); got != 2 {
+		t.Fatalf("ninguém passou do tempo limite ainda, obtido %v clientes", got)
+	}
+
+	clock.advance(15 * time.Second)
+	m.adjust(time.Second)
+	if got := m.ClientCount(); got != 1 {
+		t.Fatalf("o cliente inativo deveria ter sido esquecido, obtido %v clientes", got)
 	}
 }
 
