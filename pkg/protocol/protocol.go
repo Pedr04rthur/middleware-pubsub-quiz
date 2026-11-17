@@ -16,6 +16,9 @@ const (
 	CmdCreateTopic  byte = 0x07
 	CmdRemoveTopic  byte = 0x08
 	CmdUnsubscribe  byte = 0x09
+	// CmdHeartbeat é o "estou vivo" do cliente; o broker responde com outro
+	// CmdHeartbeat, sem passar pelo rate limit.
+	CmdHeartbeat    byte = 0x0A
 )
 
 type Message struct {
