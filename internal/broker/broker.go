@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 
@@ -51,22 +52,38 @@ func (b *Broker) Close() error {
 	return b.conn.Close()
 }
 
+// Addr é o endereço UDP em que o broker está escutando.
+func (b *Broker) Addr() string {
+	return b.conn.LocalAddr().String()
+}
+
+// Run processa datagramas até o socket ser fechado por Close.
 func (b *Broker) Run() {
-	fmt.Println("Broker UDP rodando na porta 8080...")
+	fmt.Printf("Broker UDP rodando em %s...\n", b.Addr())
 	buffer := make([]byte, 4096)
 	for {
 		n, clienteAddr, err := b.conn.ReadFromUDP(buffer)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			fmt.Println("Erro ao ler UDP:", err)
-			continue
-		}
-		if b.limitador.Allow(clienteAddr.String()) != ratelimit.Allowed {
-			fmt.Printf("Mensagem de %s descartada pelo Rate Limit\n", clienteAddr)
 			continue
 		}
 		msg, err := protocol.Deserialize(buffer[:n])
 		if err != nil {
 			fmt.Println("Pacote invalido de", clienteAddr, ":", err)
+			continue
+		}
+		// O heartbeat não passa pelo rate limit: um jogador barulhento que
+		// estoura o limite com reações não pode perder o próprio heartbeat,
+		// senão a biblioteca cliente acharia que o broker caiu.
+		if msg.Command == protocol.CmdHeartbeat {
+			b.conn.WriteToUDP(msg.Serialize(), clienteAddr)
+			continue
+		}
+		if b.limitador.Allow(clienteAddr.String()) != ratelimit.Allowed {
+			fmt.Printf("Mensagem de %s descartada pelo Rate Limit\n", clienteAddr)
 			continue
 		}
 		b.handleMessage(msg, clienteAddr)

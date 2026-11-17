@@ -14,6 +14,12 @@
 //     chega de forma assíncrona em Config.OnPublishNack.
 //   - As mensagens recebidas são entregues aos handlers por uma goroutine
 //     própria, então um handler lento não atrasa a leitura do socket.
+//
+// Resiliência (ver failover.go): o cliente envia heartbeats periódicos ao
+// broker ativo. Se o broker ficar em silêncio por Config.HeartbeatTimeout, a
+// biblioteca passa para a próxima instância de Config.Fallbacks, recria os
+// tópicos que este cliente criou e refaz as inscrições, sem a aplicação
+// perceber.
 package client
 
 import (
@@ -22,18 +28,21 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
 )
 
-// Motivo do Nack que o broker envia quando uma publicação é descartada por
-// falta de inscritos (internal/broker.handlePublish).
-const reasonNoSubscribers = "topico sem inscritos"
+// Motivos de Nack enviados pelo broker (internal/broker e internal/router).
+const (
+	reasonNoSubscribers = "topico sem inscritos"
+	reasonTopicMissing  = "topico nao existe"
+)
 
 // headerSize é o tamanho do cabeçalho do protocolo: comando (1) +
-// tamanho do tópico (2) + tamanho do payload (4). (1 + 2 + 4 = 7)
-const headerSize = 7
+// tamanho do tópico (2) + tamanho do payload (4).
+const headerSize = 1 + 2 + 4
 
 var (
 	// ErrTimeout indica que o broker não respondeu a nenhuma das tentativas.
@@ -45,6 +54,10 @@ var (
 	ErrPacketTooLarge = errors.New("client: mensagem maior que o tamanho maximo do pacote")
 	// ErrEmptyTopic indica que o tópico informado é vazio.
 	ErrEmptyTopic = errors.New("client: topico vazio")
+
+	// errLinkLost indica que a conexão usada pela operação foi declarada
+	// morta no meio dela; a operação é refeita na nova instância.
+	errLinkLost = errors.New("client: broker ativo caiu durante a operacao")
 )
 
 // NackError é retornado quando o broker recusa uma operação de controle.
@@ -87,29 +100,66 @@ type Config struct {
 	// recebe o pacote truncado.
 	MaxPacketSize int
 
+	// Fallbacks são os endereços das instâncias reserva do broker, tentadas
+	// em ordem quando a instância ativa cai (ou não responde no Connect).
+	Fallbacks []string
+
+	// HeartbeatInterval é de quanto em quanto tempo o cliente envia um
+	// heartbeat ao broker ativo. Negativo desativa heartbeat e failover.
+	HeartbeatInterval time.Duration
+	// HeartbeatTimeout é quanto tempo sem receber nada do broker ativo até
+	// ele ser considerado fora do ar. Deve ser algumas vezes o intervalo,
+	// para que a perda de um heartbeat isolado não cause failover.
+	HeartbeatTimeout time.Duration
+	// ReconnectBackoff é a pausa entre duas voltas completas pela lista de
+	// brokers quando nenhum responde.
+	ReconnectBackoff time.Duration
+
 	// OnPublishNack é chamado (na goroutine dos handlers) quando o broker
 	// descarta uma publicação por falta de inscritos. Pode ser nil.
 	OnPublishNack func(topic, reason string)
+	// OnFailover é chamado (em uma goroutine própria) depois que o cliente
+	// passou para outra instância e refez tópicos e inscrições. Pode ser nil.
+	OnFailover func(FailoverEvent)
 }
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo em rede local.
 func DefaultConfig() Config {
 	return Config{
-		RequestTimeout: 500 * time.Millisecond,
-		Retries:        3,
-		InboxSize:      1024,
-		MaxPacketSize:  4096,
+		RequestTimeout:    500 * time.Millisecond,
+		Retries:           3,
+		InboxSize:         1024,
+		MaxPacketSize:     4096,
+		HeartbeatInterval: 250 * time.Millisecond,
+		HeartbeatTimeout:  time.Second,
+		ReconnectBackoff:  500 * time.Millisecond,
 	}
+}
+
+// FailoverEvent descreve uma troca de instância do broker.
+type FailoverEvent struct {
+	From, To string
+	// Downtime é o tempo entre o último datagrama recebido da instância que
+	// caiu e o fim da restauração na nova (o que a aplicação "sentiu").
+	Downtime time.Duration
+	// Recovery é o tempo entre a detecção da queda e o fim da restauração.
+	Recovery time.Duration
+	// Restored é quantas inscrições foram refeitas; Failed, quantas o novo
+	// broker recusou.
+	Restored, Failed int
 }
 
 // Stats são os contadores do cliente, úteis para as métricas do projeto.
 type Stats struct {
-	Published     uint64 // publicações enviadas
-	PublishNacks  uint64 // publicações descartadas pelo broker (sem inscritos)
-	Received      uint64 // mensagens recebidas de tópicos inscritos
-	InboxDropped  uint64 // mensagens descartadas porque a fila local encheu
-	Unroutable    uint64 // mensagens recebidas de tópicos sem handler
-	Retransmitted uint64 // reenvios de operações de controle
+	Published      uint64 // publicações enviadas
+	PublishNacks   uint64 // publicações descartadas pelo broker (sem inscritos)
+	PublishDropped uint64 // publicações perdidas porque o broker ativo estava fora
+	Received       uint64 // mensagens recebidas de tópicos inscritos
+	InboxDropped   uint64 // mensagens descartadas porque a fila local encheu
+	Unroutable     uint64 // mensagens recebidas de tópicos sem handler
+	Retransmitted  uint64 // reenvios de operações de controle
+	Failovers      uint64 // trocas de instância do broker
+	RestoreFailed  uint64 // inscrições que não puderam ser refeitas no failover
 }
 
 // event é o que a goroutine de leitura repassa para a de despacho.
@@ -124,58 +174,85 @@ type waiter struct {
 	resp  chan *protocol.Message
 }
 
+// link é o socket com uma instância do broker.
+type link struct {
+	addr     string
+	udp      *net.UDPConn
+	lost     chan struct{} // fechado quando a instância é declarada morta
+	lastSeen atomic.Int64  // UnixNano do último datagrama recebido
+}
+
+func (l *link) touch() { l.lastSeen.Store(time.Now().UnixNano()) }
+
+func (l *link) silence() time.Duration { return time.Since(time.Unix(0, l.lastSeen.Load())) }
+
 // Client é uma sessão com o broker. É seguro para uso concorrente.
 type Client struct {
-	cfg  Config
-	conn *net.UDPConn
+	cfg   Config
+	addrs []string // primária seguida das reservas
 
-	// reqMu garante uma operação de controle por vez. O protocolo não tem id
-	// de requisição, então o Ack/Nack é associado à operação pelo tópico.
+	link        atomic.Pointer[link] // instância ativa
+	failingOver atomic.Bool
+
+	// reqMu garante uma operação de controle por vez (o protocolo não tem id
+	// de requisição, então o Ack/Nack é associado à operação pelo tópico) e
+	// impede operações da aplicação durante o failover.
 	reqMu sync.Mutex
 
 	mu       sync.Mutex
 	waiter   *waiter
-	handlers map[string]Handler
+	handlers map[string]Handler  // inscrições ativas
+	topics   map[string]struct{} // tópicos criados por este cliente
+	ready    chan struct{}       // fechado quando não há failover em curso
 
-	inbox      chan event
-	closed     chan struct{}
-	closeOnce  sync.Once
-	readerDone chan struct{}
+	inbox     chan event
+	closed    chan struct{}
+	closeOnce sync.Once
 
-	published, publishNacks, received atomic.Uint64
-	inboxDropped, unroutable, retrans atomic.Uint64
+	published, publishNacks, publishDropped, received atomic.Uint64
+	inboxDropped, unroutable, retrans                 atomic.Uint64
+	failovers, restoreFailed                          atomic.Uint64
 }
 
 // Connect abre a sessão com o broker em addr (ex.: "localhost:8080") e
-// espera a confirmação do registro.
+// espera a confirmação do registro. Se addr não responder, tenta as
+// instâncias de cfg.Fallbacks em ordem.
 func Connect(addr string, cfg Config) (*Client, error) {
 	cfg = withDefaults(cfg)
 
-	raddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("client: endereco invalido %q: %w", addr, err)
-	}
-	conn, err := net.DialUDP("udp", nil, raddr)
-	if err != nil {
-		return nil, fmt.Errorf("client: abrindo socket UDP: %w", err)
-	}
-
+	ready := make(chan struct{})
+	close(ready)
 	c := &Client{
-		cfg:        cfg,
-		conn:       conn,
-		handlers:   make(map[string]Handler),
-		inbox:      make(chan event, cfg.InboxSize),
-		closed:     make(chan struct{}),
-		readerDone: make(chan struct{}),
+		cfg:      cfg,
+		addrs:    append([]string{addr}, cfg.Fallbacks...),
+		handlers: make(map[string]Handler),
+		topics:   make(map[string]struct{}),
+		ready:    ready,
+		inbox:    make(chan event, cfg.InboxSize),
+		closed:   make(chan struct{}),
 	}
-	go c.readLoop()
 	go c.dispatchLoop()
 
-	if err := c.request("connect", protocol.CmdConnect, ""); err != nil {
-		c.shutdown()
-		return nil, err
+	var lastErr error
+	for _, a := range c.addrs {
+		l, err := c.dial(a)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		c.link.Store(l)
+		if err := c.doRequest(l, "connect", protocol.CmdConnect, ""); err != nil {
+			l.udp.Close()
+			lastErr = err
+			continue
+		}
+		if cfg.HeartbeatInterval > 0 {
+			go c.heartbeatLoop()
+		}
+		return c, nil
 	}
-	return c, nil
+	c.shutdown()
+	return nil, lastErr
 }
 
 func withDefaults(cfg Config) Config {
@@ -192,20 +269,58 @@ func withDefaults(cfg Config) Config {
 	if cfg.MaxPacketSize <= 0 {
 		cfg.MaxPacketSize = def.MaxPacketSize
 	}
+	if cfg.HeartbeatInterval == 0 {
+		cfg.HeartbeatInterval = def.HeartbeatInterval
+	}
+	if cfg.HeartbeatTimeout <= 0 {
+		cfg.HeartbeatTimeout = 4 * cfg.HeartbeatInterval
+	}
+	if cfg.ReconnectBackoff <= 0 {
+		cfg.ReconnectBackoff = def.ReconnectBackoff
+	}
 	return cfg
 }
 
-// LocalAddr é o endereço (IP:porta) com que o broker identifica este cliente.
-func (c *Client) LocalAddr() string {
-	return c.conn.LocalAddr().String()
+// dial abre o socket com uma instância e inicia sua goroutine de leitura.
+func (c *Client) dial(addr string) (*link, error) {
+	raddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("client: endereco invalido %q: %w", addr, err)
+	}
+	udp, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return nil, fmt.Errorf("client: abrindo socket UDP para %s: %w", addr, err)
+	}
+	l := &link{addr: addr, udp: udp, lost: make(chan struct{})}
+	l.touch()
+	go c.readLoop(l)
+	return l, nil
 }
 
-// CreateTopic registra um novo tópico no broker.
+// LocalAddr é o endereço (IP:porta) com que o broker ativo identifica este
+// cliente. Muda depois de um failover.
+func (c *Client) LocalAddr() string {
+	return c.link.Load().udp.LocalAddr().String()
+}
+
+// BrokerAddr é o endereço da instância do broker em uso.
+func (c *Client) BrokerAddr() string {
+	return c.link.Load().addr
+}
+
+// CreateTopic registra um novo tópico no broker. O tópico é recriado
+// automaticamente se o cliente passar para outra instância.
 func (c *Client) CreateTopic(topic string) error {
 	if topic == "" {
 		return ErrEmptyTopic
 	}
-	return c.request("create_topic", protocol.CmdCreateTopic, topic)
+	if err := c.request("create_topic", protocol.CmdCreateTopic, topic); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.topics[topic] = struct{}{}
+	c.mu.Unlock()
+	return nil
 }
 
 // RemoveTopic apaga um tópico do broker (ex.: quando a sala termina).
@@ -213,7 +328,13 @@ func (c *Client) RemoveTopic(topic string) error {
 	if topic == "" {
 		return ErrEmptyTopic
 	}
-	return c.request("remove_topic", protocol.CmdRemoveTopic, topic)
+	if err := c.request("remove_topic", protocol.CmdRemoveTopic, topic); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	delete(c.topics, topic)
+	c.mu.Unlock()
+	return nil
 }
 
 // Subscribe inscreve o cliente em topic. Cada mensagem publicada nele é
@@ -262,8 +383,9 @@ func (c *Client) Unsubscribe(topic string) error {
 }
 
 // Publish envia payload para topic sem esperar confirmação (at-most-once).
-// Só retorna erro se a mensagem for inválida ou não puder ser enviada pelo
-// socket; um descarte no broker é avisado em Config.OnPublishNack.
+// Só retorna erro se a mensagem for inválida ou o cliente estiver encerrado.
+// Um descarte no broker é avisado em Config.OnPublishNack; publicações feitas
+// enquanto o broker ativo está fora são perdidas (Stats.PublishDropped).
 func (c *Client) Publish(topic string, payload []byte) error {
 	if topic == "" {
 		return ErrEmptyTopic
@@ -274,10 +396,20 @@ func (c *Client) Publish(topic string, payload []byte) error {
 	if headerSize+len(topic)+len(payload) > c.cfg.MaxPacketSize {
 		return ErrPacketTooLarge
 	}
+	if c.failingOver.Load() {
+		c.publishDropped.Add(1)
+		return nil
+	}
 	msg := &protocol.Message{Command: protocol.CmdPublish, Topic: topic, Payload: payload}
-	if _, err := c.conn.Write(msg.Serialize()); err != nil {
+	if _, err := c.link.Load().udp.Write(msg.Serialize()); err != nil {
 		if c.isClosed() {
 			return ErrClosed
+		}
+		// Socket trocado por um failover, ou ICMP "connection refused" de um
+		// broker que acabou de cair: no at-most-once isso é só uma perda.
+		if errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNREFUSED) {
+			c.publishDropped.Add(1)
+			return nil
 		}
 		return fmt.Errorf("client: publish: %w", err)
 	}
@@ -300,21 +432,67 @@ func (c *Client) Disconnect() error {
 // Stats retorna os contadores do cliente.
 func (c *Client) Stats() Stats {
 	return Stats{
-		Published:     c.published.Load(),
-		PublishNacks:  c.publishNacks.Load(),
-		Received:      c.received.Load(),
-		InboxDropped:  c.inboxDropped.Load(),
-		Unroutable:    c.unroutable.Load(),
-		Retransmitted: c.retrans.Load(),
+		Published:      c.published.Load(),
+		PublishNacks:   c.publishNacks.Load(),
+		PublishDropped: c.publishDropped.Load(),
+		Received:       c.received.Load(),
+		InboxDropped:   c.inboxDropped.Load(),
+		Unroutable:     c.unroutable.Load(),
+		Retransmitted:  c.retrans.Load(),
+		Failovers:      c.failovers.Load(),
+		RestoreFailed:  c.restoreFailed.Load(),
 	}
 }
 
-// request envia uma operação de controle e espera o Ack/Nack, reenviando
-// quando o prazo de uma tentativa vence.
+// request executa uma operação de controle da aplicação. Se um failover
+// estiver em curso, espera ele terminar; se o broker cair no meio da
+// operação, ela é refeita na nova instância.
 func (c *Client) request(op string, cmd byte, topic string) error {
-	c.reqMu.Lock()
-	defer c.reqMu.Unlock()
+	// Espera pelo failover no máximo o mesmo que uma operação sem resposta.
+	budget := time.Duration(c.cfg.Retries+1) * c.cfg.RequestTimeout
+	for {
+		if err := c.waitReady(time.Now().Add(budget)); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				return fmt.Errorf("%w (%s %q: failover ainda em curso)", err, op, topic)
+			}
+			return err
+		}
+		c.reqMu.Lock()
+		err := c.doRequest(c.link.Load(), op, cmd, topic)
+		c.reqMu.Unlock()
+		if !errors.Is(err, errLinkLost) {
+			return err
+		}
+	}
+}
 
+// waitReady espera não haver failover em curso.
+func (c *Client) waitReady(deadline time.Time) error {
+	c.mu.Lock()
+	ready := c.ready
+	c.mu.Unlock()
+
+	select {
+	case <-ready:
+		return nil
+	default:
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-ready:
+		return nil
+	case <-c.closed:
+		return ErrClosed
+	case <-timer.C:
+		return ErrTimeout
+	}
+}
+
+// doRequest envia uma operação de controle pela conexão l e espera o
+// Ack/Nack, reenviando quando o prazo de uma tentativa vence. Quem chama deve
+// segurar reqMu.
+func (c *Client) doRequest(l *link, op string, cmd byte, topic string) error {
 	if c.isClosed() {
 		return ErrClosed
 	}
@@ -338,9 +516,12 @@ func (c *Client) request(op string, cmd byte, topic string) error {
 			c.retrans.Add(1)
 			timer.Reset(c.cfg.RequestTimeout)
 		}
-		if _, err := c.conn.Write(packet); err != nil {
+		if _, err := l.udp.Write(packet); err != nil {
 			if c.isClosed() {
 				return ErrClosed
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return errLinkLost
 			}
 			// Ex.: ICMP "connection refused" quando não há broker na porta.
 			// Trata como perda e tenta de novo depois do prazo.
@@ -353,25 +534,30 @@ func (c *Client) request(op string, cmd byte, topic string) error {
 			}
 			return nil
 		case <-timer.C:
+		case <-l.lost:
+			return errLinkLost
 		case <-c.closed:
 			return ErrClosed
 		}
 	}
-	return fmt.Errorf("%w (%s %q, %d tentativas)", ErrTimeout, op, topic, c.cfg.Retries+1)
+	return fmt.Errorf("%w (%s %q em %s, %d tentativas)", ErrTimeout, op, topic, l.addr, c.cfg.Retries+1)
 }
 
-func (c *Client) readLoop() {
-	defer close(c.readerDone)
+func (c *Client) readLoop(l *link) {
 	buf := make([]byte, 64*1024)
 	for {
-		n, err := c.conn.Read(buf)
+		n, err := l.udp.Read(buf)
 		if err != nil {
-			if c.isClosed() || errors.Is(err, net.ErrClosed) {
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			// Erros como "connection refused" (ICMP) não encerram a sessão:
-			// o broker pode voltar, e a detecção de falha é feita por prazo.
+			// Erros como "connection refused" (ICMP) não encerram a leitura:
+			// a queda do broker é detectada pela falta de heartbeat.
 			continue
+		}
+		l.touch() // qualquer datagrama do broker prova que ele está vivo
+		if c.link.Load() != l {
+			continue // resposta atrasada de uma instância abandonada
 		}
 		msg, err := protocol.Deserialize(buf[:n])
 		if err != nil {
@@ -416,6 +602,9 @@ func (c *Client) handlePacket(msg *protocol.Message) {
 		case w.resp <- resp:
 		default: // já respondida (Ack duplicado de um reenvio)
 		}
+
+	case protocol.CmdHeartbeat:
+		// Já contou como sinal de vida em readLoop.
 	}
 }
 
@@ -476,12 +665,15 @@ func (c *Client) isClosed() bool {
 	}
 }
 
-// shutdown fecha o socket e para as goroutines. Não espera o despacho, para
-// que Disconnect possa ser chamado de dentro de um handler.
+// shutdown fecha o socket ativo e para as goroutines. Não espera o despacho,
+// para que Disconnect possa ser chamado de dentro de um handler.
 func (c *Client) shutdown() {
 	c.closeOnce.Do(func() {
+		c.mu.Lock()
 		close(c.closed)
-		c.conn.Close()
-		<-c.readerDone
+		if l := c.link.Load(); l != nil {
+			l.udp.Close()
+		}
+		c.mu.Unlock()
 	})
 }

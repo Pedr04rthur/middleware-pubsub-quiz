@@ -14,8 +14,9 @@ import (
 
 // fakeBroker é um broker UDP mínimo cujas respostas o teste controla.
 type fakeBroker struct {
-	conn  *net.UDPConn
-	reply func(fb *fakeBroker, msg *protocol.Message, from *net.UDPAddr) // nil = responde Ack
+	conn   *net.UDPConn
+	reply  func(fb *fakeBroker, msg *protocol.Message, from *net.UDPAddr) // nil = responde Ack
+	silent atomic.Bool                                                    // simula broker fora do ar
 
 	mu       sync.Mutex
 	received []byte // comandos recebidos, em ordem
@@ -49,6 +50,13 @@ func (fb *fakeBroker) loop() {
 		fb.mu.Lock()
 		fb.received = append(fb.received, msg.Command)
 		fb.mu.Unlock()
+		if fb.silent.Load() {
+			continue
+		}
+		if msg.Command == protocol.CmdHeartbeat {
+			fb.send(from, protocol.CmdHeartbeat, "", "")
+			continue
+		}
 		if fb.reply != nil {
 			fb.reply(fb, msg, from)
 		} else {
@@ -78,6 +86,9 @@ func fastConfig() Config {
 	cfg := DefaultConfig()
 	cfg.RequestTimeout = 50 * time.Millisecond
 	cfg.Retries = 2
+	cfg.HeartbeatInterval = 20 * time.Millisecond
+	cfg.HeartbeatTimeout = 100 * time.Millisecond
+	cfg.ReconnectBackoff = 20 * time.Millisecond
 	return cfg
 }
 
@@ -111,7 +122,8 @@ func TestConnectSendsRegistration(t *testing.T) {
 }
 
 func TestConnectTimesOutWhenBrokerIsSilent(t *testing.T) {
-	fb := newFakeBroker(t, func(*fakeBroker, *protocol.Message, *net.UDPAddr) {}) // nunca responde
+	fb := newFakeBroker(t, nil)
+	fb.silent.Store(true)
 	cfg := fastConfig()
 
 	start := time.Now()
@@ -372,14 +384,9 @@ func TestDisconnectNotifiesBrokerAndClosesClient(t *testing.T) {
 }
 
 func TestDisconnectClosesSocketEvenIfBrokerIsGone(t *testing.T) {
-	var silent atomic.Bool
-	fb := newFakeBroker(t, func(fb *fakeBroker, m *protocol.Message, from *net.UDPAddr) {
-		if !silent.Load() {
-			fb.send(from, protocol.CmdAck, m.Topic, "")
-		}
-	})
+	fb := newFakeBroker(t, nil)
 	c := mustConnect(t, fb.addr(), fastConfig())
-	silent.Store(true)
+	fb.silent.Store(true)
 
 	if err := c.Disconnect(); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("Disconnect sem broker: erro = %v, quer ErrTimeout", err)
