@@ -21,7 +21,6 @@ func main() {
 	enviar := func(cmd byte, topic string, payload string) {
 		msg := &protocol.Message{Command: cmd, Topic: topic, Payload: []byte(payload)}
 		conn.Write(msg.Serialize())
-
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, err := conn.Read(buffer)
 		if err != nil {
@@ -36,15 +35,20 @@ func main() {
 		fmt.Printf("[%s] Topico=%s Payload=%s\n", status, resp.Topic, string(resp.Payload))
 	}
 
-	fmt.Println("=== TESTE 1: Publicar em tópico sem inscritos (deve dar NACK) ===")
+	fmt.Println("1. Criar topico")
 	enviar(protocol.CmdCreateTopic, "quiz/sala1/perguntas", "")
-	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital?")
-	// Esperado: NACK com "topico sem inscritos"
-
-	fmt.Println("\n=== TESTE 2: Inscrever e publicar (deve dar ACK) ===")
+	fmt.Println("\n2. Se inscrever no topico")
 	enviar(protocol.CmdSubscribe, "quiz/sala1/perguntas", "")
+	fmt.Println("\n3. Publicar (deve entregar para mim mesmo)")
 	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital?")
-
-	fmt.Println("\n=== TESTE 3: Publicar em tópico inexistente (deve dar NACK) ===")
-	enviar(protocol.CmdPublish, "quiz/sala999/perguntas", "Teste")
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err := conn.Read(buffer)
+	if err == nil {
+		resp, _ := protocol.Deserialize(buffer[:n])
+		fmt.Printf("[RECEBIDO] Topico=%s Payload=%s\n", resp.Topic, string(resp.Payload))
+	}
+	fmt.Println("\n4. Desconectar (deve limpar tudo)")
+	enviar(protocol.CmdDisconnect, "quiz/sala1/perguntas", "")
+	fmt.Println("\n5. Tentar publicar novamente (deve dar NACK: sem inscritos)")
+	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Teste apos disconnect")
 }
