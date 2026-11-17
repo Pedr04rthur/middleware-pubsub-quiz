@@ -18,7 +18,6 @@ func main() {
 
 	buffer := make([]byte, 1024)
 
-	// Função auxiliar para enviar e esperar resposta
 	enviar := func(cmd byte, topic string, payload string) {
 		msg := &protocol.Message{Command: cmd, Topic: topic, Payload: []byte(payload)}
 		conn.Write(msg.Serialize())
@@ -26,22 +25,26 @@ func main() {
 		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Printf("Timeout em %d: %v\n", cmd, err)
+			fmt.Printf("Timeout: %v\n", err)
 			return
 		}
 		resp, _ := protocol.Deserialize(buffer[:n])
-		fmt.Printf("Resposta: Comando=%d, Topico=%s, Payload=%s\n", resp.Command, resp.Topic, string(resp.Payload))
+		status := "ACK"
+		if resp.Command == protocol.CmdNack {
+			status = "NACK"
+		}
+		fmt.Printf("[%s] Topico=%s Payload=%s\n", status, resp.Topic, string(resp.Payload))
 	}
 
-	// 1. Cria tópico
+	fmt.Println("=== TESTE 1: Publicar em tópico sem inscritos (deve dar NACK) ===")
 	enviar(protocol.CmdCreateTopic, "quiz/sala1/perguntas", "")
+	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital?")
+	// Esperado: NACK com "topico sem inscritos"
 
-	// 2. Inscreve-se
+	fmt.Println("\n=== TESTE 2: Inscrever e publicar (deve dar ACK) ===")
 	enviar(protocol.CmdSubscribe, "quiz/sala1/perguntas", "")
+	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital?")
 
-	// 3. Publica uma pergunta
-	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital da Franca?")
-
-	// 4. Remove o tópico (encerra a sala)
-	enviar(protocol.CmdRemoveTopic, "quiz/sala1/perguntas", "")
+	fmt.Println("\n=== TESTE 3: Publicar em tópico inexistente (deve dar NACK) ===")
+	enviar(protocol.CmdPublish, "quiz/sala999/perguntas", "Teste")
 }
