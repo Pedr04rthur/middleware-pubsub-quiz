@@ -9,14 +9,17 @@ import (
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/outbox"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/ratelimit"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/router"
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
 )
 
 type Broker struct {
-	conn      *net.UDPConn
-	router    *router.Router
-	limitador *ratelimit.Manager
-	outbox    *outbox.Hub
+	conn        *net.UDPConn
+	router      *router.Router
+	limitador   *ratelimit.Manager
+	escalonador *scheduler.Scheduler
+	outbox      *outbox.Hub
+	cancel      context.CancelFunc
 }
 
 func New(porta string) (*Broker, error) {
@@ -38,17 +41,22 @@ func New(porta string) (*Broker, error) {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	b = &Broker{
 		conn:      conn,
 		router:    router.New(),
 		limitador: ratelimit.NewManager(ratelimit.DefaultConfig()),
 		outbox:    outbox.NewHub(outbox.DefaultConfig(), onDisconnect),
+		cancel:    cancel,
 	}
-	go b.limitador.Run(context.Background())
+	b.escalonador = scheduler.New(scheduler.DefaultConfig(), b.entregar)
+	go b.limitador.Run(ctx)
+	go b.escalonador.Run(ctx)
 	return b, nil
 }
 
 func (b *Broker) Close() error {
+	b.cancel()
 	return b.conn.Close()
 }
 
@@ -138,7 +146,7 @@ func (b *Broker) handleSubscribe(msg *protocol.Message, clienteAddr *net.UDPAddr
 		b.enviarNack(clienteAddr, msg.Topic, err.Error())
 		return
 	}
-	b.outbox.Add(clienteStr, func(p []byte) error {
+	b.outbox.Ensure(clienteStr, func(p []byte) error {
 		_, err := b.conn.WriteToUDP(p, clienteAddr)
 		return err
 	})
@@ -153,12 +161,23 @@ func (b *Broker) handlePublish(msg *protocol.Message, clienteAddr *net.UDPAddr) 
 		b.enviarNack(clienteAddr, msg.Topic, "topico sem inscritos")
 		return
 	}
-	fmt.Printf("[PUBLISH] %s (publicado por %s) -> %d inscritos\n", msg.Topic, clienteAddr, len(inscritos))
-	payload := msg.Serialize()
-	for _, endereco := range inscritos {
-		b.outbox.Deliver(endereco, payload)
+	// Sem Nack quando a fila está cheia: a biblioteca cliente trataria um Nack
+	// com outro motivo como resposta de uma operação de controle no mesmo tópico.
+	// Publish é at-most-once, então o descarte é silencioso como no rate limit.
+	if !b.escalonador.Publish(scheduler.Message{Topic: msg.Topic, Payload: msg.Serialize(), From: clienteAddr.String()}) {
+		fmt.Printf("[PUBLISH-DESCARTADO] Fila de prioridade %s cheia; %s de %s descartado\n", scheduler.Classify(msg.Topic), msg.Topic, clienteAddr)
+		return
 	}
+	fmt.Printf("[PUBLISH] %s (publicado por %s) -> %d inscritos\n", msg.Topic, clienteAddr, len(inscritos))
 	b.enviarAck(clienteAddr, msg.Topic)
+}
+
+// entregar é chamado pelo escalonador, em ordem de prioridade, e repassa a
+// mensagem para a fila de saída de cada inscrito do tópico.
+func (b *Broker) entregar(m scheduler.Message) {
+	for _, endereco := range b.router.GetSubscribers(m.Topic) {
+		b.outbox.Deliver(endereco, m.Payload, m.Priority)
+	}
 }
 
 func (b *Broker) enviarAck(destino *net.UDPAddr, topico string) {

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
 )
 
@@ -68,5 +69,93 @@ func TestHeartbeatBypassesRateLimit(t *testing.T) {
 	resp, err := protocol.Deserialize(buf[:n])
 	if err != nil || resp.Command != protocol.CmdHeartbeat {
 		t.Fatalf("resposta = %+v, %v; quer CmdHeartbeat", resp, err)
+	}
+}
+
+func dial(t *testing.T, b *Broker) *net.UDPConn {
+	t.Helper()
+	raddr, _ := net.ResolveUDPAddr("udp", b.Addr())
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func receive(t *testing.T, conn *net.UDPConn) *protocol.Message {
+	t.Helper()
+	buf := make([]byte, 4096)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("sem resposta do broker: %v", err)
+	}
+	msg, err := protocol.Deserialize(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return msg
+}
+
+func request(t *testing.T, conn *net.UDPConn, cmd byte, topic string) {
+	t.Helper()
+	conn.Write((&protocol.Message{Command: cmd, Topic: topic}).Serialize())
+	if resp := receive(t, conn); resp.Command != protocol.CmdAck {
+		t.Fatalf("comando %d em %q: resposta %d %q, quer Ack", cmd, topic, resp.Command, resp.Payload)
+	}
+}
+
+func TestPublishIsDeliveredThroughScheduler(t *testing.T) {
+	b, done := startBroker(t)
+	defer func() { b.Close(); <-done }()
+
+	jogador := dial(t, b)
+	host := dial(t, b)
+	request(t, host, protocol.CmdCreateTopic, "quiz/s1/perguntas")
+	request(t, jogador, protocol.CmdSubscribe, "quiz/s1/perguntas")
+
+	host.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: "quiz/s1/perguntas", Payload: []byte("Qual a capital?")}).Serialize())
+
+	got := receive(t, jogador)
+	if got.Command != protocol.CmdPublish || got.Topic != "quiz/s1/perguntas" || string(got.Payload) != "Qual a capital?" {
+		t.Fatalf("jogador recebeu %+v", got)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for b.escalonador.Stats().Delivered[scheduler.Critical] != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a pergunta deveria passar pelo escalonador como crítica, stats %+v", b.escalonador.Stats())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSubscribingToMoreTopicsKeepsOutbox(t *testing.T) {
+	b, done := startBroker(t)
+	defer func() { b.Close(); <-done }()
+
+	jogador := dial(t, b)
+	host := dial(t, b)
+	for _, topico := range []string{"quiz/s1/perguntas", "quiz/s1/placar"} {
+		request(t, host, protocol.CmdCreateTopic, topico)
+	}
+	request(t, jogador, protocol.CmdSubscribe, "quiz/s1/perguntas")
+
+	host.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: "quiz/s1/perguntas", Payload: []byte("p1")}).Serialize())
+	receive(t, jogador)
+
+	id := jogador.LocalAddr().String()
+	deadline := time.Now().Add(2 * time.Second)
+	for st, _ := b.outbox.Stats(id); st.Sent != 1; st, _ = b.outbox.Stats(id) {
+		if time.Now().After(deadline) {
+			t.Fatalf("fila de saída deveria registrar 1 envio, stats %+v", st)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	request(t, jogador, protocol.CmdSubscribe, "quiz/s1/placar")
+
+	if st, ok := b.outbox.Stats(id); !ok || st.Sent != 1 {
+		t.Fatalf("a nova inscrição recriou a fila de saída (stats %+v, existe=%v)", st, ok)
 	}
 }
