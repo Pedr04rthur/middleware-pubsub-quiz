@@ -11,7 +11,11 @@ import (
 )
 
 func deliver(h *Hub, id string, payload []byte) Result {
-	return h.Deliver(id, payload, scheduler.Normal)
+	return deliverPrio(h, id, payload, scheduler.Normal)
+}
+
+func deliverPrio(h *Hub, id string, payload []byte, prio scheduler.Priority) Result {
+	return h.Deliver(id, scheduler.Message{Payload: payload, Priority: prio})
 }
 
 type collector struct {
@@ -210,14 +214,14 @@ func TestReactionsNeverEvictOrDelayCritical(t *testing.T) {
 	send, entered, release, got := blockingSender()
 	h.Add("a", send)
 
-	h.Deliver("a", []byte("em-envio"), scheduler.Normal)
+	deliverPrio(h, "a", []byte("em-envio"), scheduler.Normal)
 	<-entered
 
-	h.Deliver("a", []byte("pergunta-1"), scheduler.Critical)
+	deliverPrio(h, "a", []byte("pergunta-1"), scheduler.Critical)
 	for i := 0; i < 10; i++ {
-		h.Deliver("a", []byte(fmt.Sprintf("reacao-%d", i)), scheduler.Low)
+		deliverPrio(h, "a", []byte(fmt.Sprintf("reacao-%d", i)), scheduler.Low)
 	}
-	h.Deliver("a", []byte("placar-1"), scheduler.Critical)
+	deliverPrio(h, "a", []byte("placar-1"), scheduler.Critical)
 
 	close(release)
 	waitFor(t, "a fila esvaziar", func() bool { return len(got.snapshot()) == 6 })
@@ -227,6 +231,32 @@ func TestReactionsNeverEvictOrDelayCritical(t *testing.T) {
 		if m != want[i] {
 			t.Fatalf("recebido %v, esperado %v", got.snapshot(), want)
 		}
+	}
+}
+
+func TestExpiredMessagesAreNotSent(t *testing.T) {
+	h := NewHub(DefaultConfig(), nil)
+	send, entered, release, got := blockingSender()
+	h.Add("a", send)
+
+	deliver(h, "a", []byte("em-envio"))
+	<-entered
+
+	h.Deliver("a", scheduler.Message{Payload: []byte("resposta-velha"), ExpiresAt: time.Now().Add(20 * time.Millisecond)})
+	h.Deliver("a", scheduler.Message{Payload: []byte("resposta-nova"), ExpiresAt: time.Now().Add(time.Hour)})
+	h.Deliver("a", scheduler.Message{Payload: []byte("sem-validade")})
+	time.Sleep(50 * time.Millisecond)
+
+	close(release)
+	waitFor(t, "a fila esvaziar", func() bool { return len(got.snapshot()) == 3 })
+	time.Sleep(20 * time.Millisecond)
+
+	want := []string{"em-envio", "resposta-nova", "sem-validade"}
+	if fmt.Sprint(got.snapshot()) != fmt.Sprint(want) {
+		t.Fatalf("recebido %v, esperado %v", got.snapshot(), want)
+	}
+	if st, _ := h.Stats("a"); st.Expired != 1 {
+		t.Fatalf("1 mensagem deveria ter caducado, stats %+v", st)
 	}
 }
 

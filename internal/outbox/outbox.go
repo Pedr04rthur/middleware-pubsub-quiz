@@ -61,18 +61,21 @@ const (
 type Stats struct {
 	Sent    int64
 	Dropped int64
+	// Expired são mensagens que caducaram (ExpiresAt) antes de serem enviadas.
+	Expired int64
 	Pending int
 }
 
 type subscriber struct {
 	id     string
 	send   Sender
-	queues [scheduler.NumPriorities]chan []byte
+	queues [scheduler.NumPriorities]chan scheduler.Message
 	done   chan struct{}
 	once   sync.Once
 
 	sent    atomic.Int64
 	dropped atomic.Int64
+	expired atomic.Int64
 
 	mu          sync.Mutex
 	windowStart time.Time
@@ -138,7 +141,7 @@ func (h *Hub) Ensure(id string, send Sender) bool {
 func (h *Hub) newSubscriber(id string, send Sender) *subscriber {
 	s := &subscriber{id: id, send: send, done: make(chan struct{})}
 	for p := range s.queues {
-		s.queues[p] = make(chan []byte, h.cfg.QueueSize)
+		s.queues[p] = make(chan scheduler.Message, h.cfg.QueueSize)
 	}
 	return s
 }
@@ -155,9 +158,10 @@ func (h *Hub) Remove(id string) {
 	}
 }
 
-// Deliver coloca a mensagem na faixa da prioridade dada na fila do inscrito.
-// Nunca bloqueia, então um inscrito lento não atrasa a entrega para os outros.
-func (h *Hub) Deliver(id string, payload []byte, prio scheduler.Priority) Result {
+// Deliver coloca a mensagem na faixa da sua prioridade na fila do inscrito.
+// Se m.ExpiresAt passar antes do envio, ela é descartada. Nunca bloqueia, então
+// um inscrito lento não atrasa a entrega para os outros.
+func (h *Hub) Deliver(id string, m scheduler.Message) Result {
 	h.mu.RLock()
 	s := h.subs[id]
 	h.mu.RUnlock()
@@ -168,13 +172,13 @@ func (h *Hub) Deliver(id string, payload []byte, prio scheduler.Priority) Result
 	if s.stopped() {
 		return Disconnected
 	}
-	if prio < 0 || prio >= scheduler.NumPriorities {
-		prio = scheduler.Normal
+	if m.Priority < 0 || m.Priority >= scheduler.NumPriorities {
+		m.Priority = scheduler.Normal
 	}
-	q := s.queues[prio]
+	q := s.queues[m.Priority]
 
 	select {
-	case q <- payload:
+	case q <- m:
 		return Queued
 	default:
 	}
@@ -184,7 +188,7 @@ func (h *Hub) Deliver(id string, payload []byte, prio scheduler.Priority) Result
 	default:
 	}
 	select {
-	case q <- payload:
+	case q <- m:
 	default:
 	}
 	s.dropped.Add(1)
@@ -209,7 +213,7 @@ func (h *Hub) Stats(id string) (Stats, bool) {
 	for _, q := range s.queues {
 		pending += len(q)
 	}
-	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Pending: pending}, true
+	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Expired: s.expired.Load(), Pending: pending}, true
 }
 
 // Len retorna quantos inscritos estão ativos.
@@ -221,11 +225,15 @@ func (h *Hub) Len() int {
 
 func (h *Hub) run(s *subscriber) {
 	for {
-		payload, ok := s.next()
+		m, ok := s.next()
 		if !ok {
 			return
 		}
-		if err := s.send(payload); err != nil {
+		if m.Expired(h.now()) {
+			s.expired.Add(1)
+			continue
+		}
+		if err := s.send(m.Payload); err != nil {
 			h.disconnect(s, err)
 			return
 		}
@@ -235,27 +243,27 @@ func (h *Hub) run(s *subscriber) {
 
 // next retorna a próxima mensagem a enviar, sempre da faixa de maior
 // prioridade que tiver alguma, esperando se todas estiverem vazias.
-func (s *subscriber) next() ([]byte, bool) {
+func (s *subscriber) next() (scheduler.Message, bool) {
 	if s.stopped() {
-		return nil, false
+		return scheduler.Message{}, false
 	}
 	for _, q := range s.queues {
 		select {
-		case p := <-q:
-			return p, true
+		case m := <-q:
+			return m, true
 		default:
 		}
 	}
 
 	select {
 	case <-s.done:
-		return nil, false
-	case p := <-s.queues[scheduler.Critical]:
-		return p, true
-	case p := <-s.queues[scheduler.Normal]:
-		return p, true
-	case p := <-s.queues[scheduler.Low]:
-		return p, true
+		return scheduler.Message{}, false
+	case m := <-s.queues[scheduler.Critical]:
+		return m, true
+	case m := <-s.queues[scheduler.Normal]:
+		return m, true
+	case m := <-s.queues[scheduler.Low]:
+		return m, true
 	}
 }
 
