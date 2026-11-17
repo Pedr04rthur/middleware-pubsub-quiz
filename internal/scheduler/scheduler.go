@@ -21,7 +21,8 @@ const (
 	// Low é o tráfego secundário e descartável: reações.
 	Low
 
-	numPriorities
+	// NumPriorities é a quantidade de classes de prioridade.
+	NumPriorities
 )
 
 func (p Priority) String() string {
@@ -85,12 +86,12 @@ func DefaultConfig() Config {
 
 // Stats conta o que aconteceu com as mensagens de cada prioridade.
 type Stats struct {
-	Enqueued  [numPriorities]int64
-	Delivered [numPriorities]int64
+	Enqueued  [NumPriorities]int64
+	Delivered [NumPriorities]int64
 	// Dropped são mensagens recusadas porque a fila estava cheia.
-	Dropped [numPriorities]int64
+	Dropped [NumPriorities]int64
 	// Expired são reações descartadas por terem passado de LowMaxAge.
-	Expired [numPriorities]int64
+	Expired [NumPriorities]int64
 }
 
 // Scheduler mantém uma fila por prioridade e entrega as mensagens ao handler
@@ -100,13 +101,13 @@ type Stats struct {
 type Scheduler struct {
 	cfg     Config
 	handler func(Message)
-	queues  [numPriorities]chan Message
+	queues  [NumPriorities]chan Message
 	now     func() time.Time
 
-	enqueued  [numPriorities]atomic.Int64
-	delivered [numPriorities]atomic.Int64
-	dropped   [numPriorities]atomic.Int64
-	expired   [numPriorities]atomic.Int64
+	enqueued  [NumPriorities]atomic.Int64
+	delivered [NumPriorities]atomic.Int64
+	dropped   [NumPriorities]atomic.Int64
+	expired   [NumPriorities]atomic.Int64
 }
 
 // New cria um escalonador que entrega as mensagens a handler, que é chamado
@@ -178,7 +179,7 @@ func (s *Scheduler) next(ctx context.Context) (Message, bool) {
 // Stats retorna os contadores atuais.
 func (s *Scheduler) Stats() Stats {
 	var st Stats
-	for p := Priority(0); p < numPriorities; p++ {
+	for p := Priority(0); p < NumPriorities; p++ {
 		st.Enqueued[p] = s.enqueued[p].Load()
 		st.Delivered[p] = s.delivered[p].Load()
 		st.Dropped[p] = s.dropped[p].Load()
@@ -188,8 +189,8 @@ func (s *Scheduler) Stats() Stats {
 }
 
 // Pending retorna quantas mensagens de cada prioridade estão esperando.
-func (s *Scheduler) Pending() [numPriorities]int {
-	var n [numPriorities]int
+func (s *Scheduler) Pending() [NumPriorities]int {
+	var n [NumPriorities]int
 	for p, q := range s.queues {
 		n[p] = len(q)
 	}

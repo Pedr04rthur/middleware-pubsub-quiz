@@ -6,7 +6,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 )
+
+func deliver(h *Hub, id string, payload []byte) Result {
+	return h.Deliver(id, payload, scheduler.Normal)
+}
 
 type collector struct {
 	mu   sync.Mutex
@@ -73,8 +79,8 @@ func TestSlowConsumerDoesNotAffectOthers(t *testing.T) {
 	for i := 0; i < total; i++ {
 		msg := []byte(fmt.Sprintf("msg-%d", i))
 		start := time.Now()
-		h.Deliver("rapido", msg)
-		h.Deliver("lento", msg)
+		deliver(h, "rapido", msg)
+		deliver(h, "lento", msg)
 		if d := time.Since(start); d > slowest {
 			slowest = d
 		}
@@ -105,7 +111,7 @@ func TestSlowConsumerDoesNotAffectOthers(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	if got := h.Deliver("lento", []byte("x")); got != Unknown {
+	if got := deliver(h, "lento", []byte("x")); got != Unknown {
 		t.Fatalf("inscrito desconectado deveria ter sido removido, obtido %v", got)
 	}
 	if h.Len() != 1 {
@@ -122,12 +128,12 @@ func TestFullQueueDropsOldest(t *testing.T) {
 	send, entered, release, got := blockingSender()
 	h.Add("a", send)
 
-	h.Deliver("a", []byte("1"))
+	deliver(h, "a", []byte("1"))
 	<-entered
 
 	results := map[Result]int{}
 	for i := 2; i <= 10; i++ {
-		results[h.Deliver("a", []byte(fmt.Sprint(i)))]++
+		results[deliver(h, "a", []byte(fmt.Sprint(i)))]++
 	}
 	if results[Queued] != 3 || results[Dropped] != 6 {
 		t.Fatalf("esperado 3 enfileiradas e 6 com descarte, obtido %v", results)
@@ -151,10 +157,10 @@ func TestDropOnlyPolicyNeverDisconnects(t *testing.T) {
 	defer close(release)
 	h.Add("a", send)
 
-	h.Deliver("a", []byte("0"))
+	deliver(h, "a", []byte("0"))
 	<-entered
 	for i := 0; i < 1000; i++ {
-		h.Deliver("a", []byte("x"))
+		deliver(h, "a", []byte("x"))
 	}
 
 	if disconnected || h.Len() != 1 {
@@ -171,7 +177,7 @@ func TestSendErrorDisconnects(t *testing.T) {
 	broken := errors.New("conexão perdida")
 	h.Add("a", func([]byte) error { return broken })
 
-	h.Deliver("a", []byte("x"))
+	deliver(h, "a", []byte("x"))
 
 	select {
 	case r := <-reasons:
@@ -194,7 +200,55 @@ func TestRemoveDoesNotNotify(t *testing.T) {
 	if notified {
 		t.Fatal("Remove não deveria chamar onDisconnect")
 	}
-	if got := h.Deliver("a", []byte("x")); got != Unknown {
+	if got := deliver(h, "a", []byte("x")); got != Unknown {
 		t.Fatalf("inscrito removido deveria ser desconhecido, obtido %v", got)
+	}
+}
+
+func TestReactionsNeverEvictOrDelayCritical(t *testing.T) {
+	h := NewHub(Config{QueueSize: 3}, nil)
+	send, entered, release, got := blockingSender()
+	h.Add("a", send)
+
+	h.Deliver("a", []byte("em-envio"), scheduler.Normal)
+	<-entered
+
+	h.Deliver("a", []byte("pergunta-1"), scheduler.Critical)
+	for i := 0; i < 10; i++ {
+		h.Deliver("a", []byte(fmt.Sprintf("reacao-%d", i)), scheduler.Low)
+	}
+	h.Deliver("a", []byte("placar-1"), scheduler.Critical)
+
+	close(release)
+	waitFor(t, "a fila esvaziar", func() bool { return len(got.snapshot()) == 6 })
+
+	want := []string{"em-envio", "pergunta-1", "placar-1", "reacao-7", "reacao-8", "reacao-9"}
+	for i, m := range got.snapshot() {
+		if m != want[i] {
+			t.Fatalf("recebido %v, esperado %v", got.snapshot(), want)
+		}
+	}
+}
+
+func TestEnsureKeepsExistingQueue(t *testing.T) {
+	h := NewHub(DefaultConfig(), nil)
+	send, entered, release, got := blockingSender()
+
+	if !h.Ensure("a", send) {
+		t.Fatal("o primeiro Ensure deveria criar a fila")
+	}
+	deliver(h, "a", []byte("1"))
+	<-entered
+	deliver(h, "a", []byte("2"))
+
+	other := &collector{}
+	if h.Ensure("a", other.send) {
+		t.Fatal("o segundo Ensure não deveria recriar a fila")
+	}
+
+	close(release)
+	waitFor(t, "as duas mensagens chegarem", func() bool { return len(got.snapshot()) == 2 })
+	if len(other.snapshot()) != 0 {
+		t.Fatalf("a fila original deveria ter sido mantida, mas o novo sender recebeu %v", other.snapshot())
 	}
 }

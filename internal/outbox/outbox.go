@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 )
 
 // ErrSlowConsumer é o motivo de desconexão de um inscrito que não consegue
@@ -19,11 +21,13 @@ type Sender func(payload []byte) error
 
 // Config define o tamanho das filas e a política de isolamento.
 type Config struct {
-	// QueueSize é quantas mensagens cabem na fila de saída de cada inscrito.
+	// QueueSize é quantas mensagens de cada prioridade cabem na fila de saída
+	// de cada inscrito. Cada prioridade tem a sua faixa, então reações nunca
+	// ocupam o espaço de perguntas e placar.
 	QueueSize int
 
-	// Quando a fila está cheia, a mensagem mais antiga é descartada para dar
-	// lugar à nova, pois no quiz a informação mais recente é a que importa.
+	// Quando a faixa está cheia, a mensagem mais antiga dela é descartada para
+	// dar lugar à nova, pois no quiz a informação mais recente é a que importa.
 	// Se um inscrito tiver mais de MaxDrops descartes dentro de DropWindow,
 	// ele é desconectado. MaxDrops zero desativa a desconexão (só descarta).
 	MaxDrops   int
@@ -61,11 +65,11 @@ type Stats struct {
 }
 
 type subscriber struct {
-	id    string
-	send  Sender
-	queue chan []byte
-	done  chan struct{}
-	once  sync.Once
+	id     string
+	send   Sender
+	queues [scheduler.NumPriorities]chan []byte
+	done   chan struct{}
+	once   sync.Once
 
 	sent    atomic.Int64
 	dropped atomic.Int64
@@ -99,14 +103,10 @@ func NewHub(cfg Config, onDisconnect func(id string, reason error)) *Hub {
 }
 
 // Add cria a fila de saída do inscrito e a goroutine que envia para ele.
-// Se já existir um inscrito com o mesmo id, ele é substituído.
+// Se já existir um inscrito com o mesmo id, ele é substituído e as mensagens
+// pendentes na fila antiga são perdidas; use Ensure para manter a existente.
 func (h *Hub) Add(id string, send Sender) {
-	s := &subscriber{
-		id:    id,
-		send:  send,
-		queue: make(chan []byte, h.cfg.QueueSize),
-		done:  make(chan struct{}),
-	}
+	s := h.newSubscriber(id, send)
 
 	h.mu.Lock()
 	old := h.subs[id]
@@ -117,6 +117,30 @@ func (h *Hub) Add(id string, send Sender) {
 		old.stop()
 	}
 	go h.run(s)
+}
+
+// Ensure cria a fila de saída do inscrito apenas se ela ainda não existir, e
+// informa se criou. Útil quando o mesmo cliente se inscreve em vários tópicos.
+func (h *Hub) Ensure(id string, send Sender) bool {
+	h.mu.Lock()
+	if _, ok := h.subs[id]; ok {
+		h.mu.Unlock()
+		return false
+	}
+	s := h.newSubscriber(id, send)
+	h.subs[id] = s
+	h.mu.Unlock()
+
+	go h.run(s)
+	return true
+}
+
+func (h *Hub) newSubscriber(id string, send Sender) *subscriber {
+	s := &subscriber{id: id, send: send, done: make(chan struct{})}
+	for p := range s.queues {
+		s.queues[p] = make(chan []byte, h.cfg.QueueSize)
+	}
+	return s
 }
 
 // Remove encerra a fila do inscrito sem chamar onDisconnect.
@@ -131,9 +155,9 @@ func (h *Hub) Remove(id string) {
 	}
 }
 
-// Deliver coloca a mensagem na fila do inscrito. Nunca bloqueia, então um
-// inscrito lento não atrasa a entrega para os outros.
-func (h *Hub) Deliver(id string, payload []byte) Result {
+// Deliver coloca a mensagem na faixa da prioridade dada na fila do inscrito.
+// Nunca bloqueia, então um inscrito lento não atrasa a entrega para os outros.
+func (h *Hub) Deliver(id string, payload []byte, prio scheduler.Priority) Result {
 	h.mu.RLock()
 	s := h.subs[id]
 	h.mu.RUnlock()
@@ -144,19 +168,23 @@ func (h *Hub) Deliver(id string, payload []byte) Result {
 	if s.stopped() {
 		return Disconnected
 	}
+	if prio < 0 || prio >= scheduler.NumPriorities {
+		prio = scheduler.Normal
+	}
+	q := s.queues[prio]
 
 	select {
-	case s.queue <- payload:
+	case q <- payload:
 		return Queued
 	default:
 	}
 
 	select {
-	case <-s.queue:
+	case <-q:
 	default:
 	}
 	select {
-	case s.queue <- payload:
+	case q <- payload:
 	default:
 	}
 	s.dropped.Add(1)
@@ -177,7 +205,11 @@ func (h *Hub) Stats(id string) (Stats, bool) {
 	if s == nil {
 		return Stats{}, false
 	}
-	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Pending: len(s.queue)}, true
+	pending := 0
+	for _, q := range s.queues {
+		pending += len(q)
+	}
+	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Pending: pending}, true
 }
 
 // Len retorna quantos inscritos estão ativos.
@@ -189,16 +221,41 @@ func (h *Hub) Len() int {
 
 func (h *Hub) run(s *subscriber) {
 	for {
-		select {
-		case <-s.done:
+		payload, ok := s.next()
+		if !ok {
 			return
-		case payload := <-s.queue:
-			if err := s.send(payload); err != nil {
-				h.disconnect(s, err)
-				return
-			}
-			s.sent.Add(1)
 		}
+		if err := s.send(payload); err != nil {
+			h.disconnect(s, err)
+			return
+		}
+		s.sent.Add(1)
+	}
+}
+
+// next retorna a próxima mensagem a enviar, sempre da faixa de maior
+// prioridade que tiver alguma, esperando se todas estiverem vazias.
+func (s *subscriber) next() ([]byte, bool) {
+	if s.stopped() {
+		return nil, false
+	}
+	for _, q := range s.queues {
+		select {
+		case p := <-q:
+			return p, true
+		default:
+		}
+	}
+
+	select {
+	case <-s.done:
+		return nil, false
+	case p := <-s.queues[scheduler.Critical]:
+		return p, true
+	case p := <-s.queues[scheduler.Normal]:
+		return p, true
+	case p := <-s.queues[scheduler.Low]:
+		return p, true
 	}
 }
 
@@ -215,7 +272,7 @@ func (h *Hub) disconnect(s *subscriber, reason error) {
 }
 
 // stop encerra a goroutine de envio e informa se foi esta chamada que parou.
-// A fila não é fechada, para que um Deliver concorrente nunca entre em pânico.
+// As filas não são fechadas, para que um Deliver concorrente nunca entre em pânico.
 func (s *subscriber) stop() bool {
 	stopped := false
 	s.once.Do(func() {
