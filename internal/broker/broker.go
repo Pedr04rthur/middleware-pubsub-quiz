@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/aggregator"
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/answerwindow"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/outbox"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/ratelimit"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/router"
@@ -18,6 +20,8 @@ type Broker struct {
 	router      *router.Router
 	limitador   *ratelimit.Manager
 	escalonador *scheduler.Scheduler
+	agregador   *aggregator.Aggregator
+	janela      *answerwindow.Window
 	outbox      *outbox.Hub
 	cancel      context.CancelFunc
 }
@@ -49,9 +53,13 @@ func New(porta string) (*Broker, error) {
 		outbox:    outbox.NewHub(outbox.DefaultConfig(), onDisconnect),
 		cancel:    cancel,
 	}
-	b.escalonador = scheduler.New(scheduler.DefaultConfig(), b.entregar)
+	cfgEscalonador := scheduler.DefaultConfig()
+	b.escalonador = scheduler.New(cfgEscalonador, b.entregar)
+	b.janela = answerwindow.New(scheduler.ClampAnswerTTL(cfgEscalonador.AnswerTTL))
+	b.agregador = aggregator.New(aggregator.DefaultConfig(), b.publicarResumo)
 	go b.limitador.Run(ctx)
 	go b.escalonador.Run(ctx)
+	go b.agregador.Run(ctx)
 	return b, nil
 }
 
@@ -116,6 +124,9 @@ func (b *Broker) handleMessage(msg *protocol.Message, clienteAddr *net.UDPAddr) 
 			b.enviarNack(clienteAddr, msg.Topic, err.Error())
 			return
 		}
+		if sala, tipo, ok := scheduler.ParseTopic(msg.Topic); ok && tipo == scheduler.KindQuestions {
+			b.janela.Forget(sala)
+		}
 		fmt.Printf("[REMOVE_TOPIC] Topico removido: %s\n", msg.Topic)
 		b.enviarAck(clienteAddr, msg.Topic)
 	case protocol.CmdSubscribe:
@@ -161,9 +172,25 @@ func (b *Broker) handlePublish(msg *protocol.Message, clienteAddr *net.UDPAddr) 
 		b.enviarNack(clienteAddr, msg.Topic, "topico sem inscritos")
 		return
 	}
-	// Sem Nack quando a fila está cheia: a biblioteca cliente trataria um Nack
-	// com outro motivo como resposta de uma operação de controle no mesmo tópico.
-	// Publish é at-most-once, então o descarte é silencioso como no rate limit.
+
+	// Os descartes abaixo são silenciosos, sem Nack: a biblioteca cliente
+	// trataria um Nack com outro motivo como resposta de uma operação de
+	// controle no mesmo tópico. Publish é at-most-once, como no rate limit.
+	sala, tipo, _ := scheduler.ParseTopic(msg.Topic)
+	switch tipo {
+	case scheduler.KindReactions:
+		b.agregador.Add(msg.Topic, msg.Payload)
+		b.enviarAck(clienteAddr, msg.Topic)
+		return
+	case scheduler.KindQuestions:
+		b.janela.QuestionAsked(sala)
+	case scheduler.KindAnswers:
+		if !b.janela.Accept(sala) {
+			fmt.Printf("[PUBLISH-DESCARTADO] Resposta de %s em %s fora da janela da pergunta\n", clienteAddr, msg.Topic)
+			return
+		}
+	}
+
 	if !b.escalonador.Publish(scheduler.Message{Topic: msg.Topic, Payload: msg.Serialize(), From: clienteAddr.String()}) {
 		fmt.Printf("[PUBLISH-DESCARTADO] Fila de prioridade %s cheia; %s de %s descartado\n", scheduler.Classify(msg.Topic), msg.Topic, clienteAddr)
 		return
@@ -172,11 +199,21 @@ func (b *Broker) handlePublish(msg *protocol.Message, clienteAddr *net.UDPAddr) 
 	b.enviarAck(clienteAddr, msg.Topic)
 }
 
+// publicarResumo é chamado pelo agregador com o resumo das reações de um
+// tópico e o publica para os inscritos como uma reação comum.
+func (b *Broker) publicarResumo(topico string, resumo []byte) {
+	if len(b.router.GetSubscribers(topico)) == 0 {
+		return
+	}
+	pacote := (&protocol.Message{Command: protocol.CmdPublish, Topic: topico, Payload: resumo}).Serialize()
+	b.escalonador.Publish(scheduler.Message{Topic: topico, Payload: pacote, From: "broker"})
+}
+
 // entregar é chamado pelo escalonador, em ordem de prioridade, e repassa a
 // mensagem para a fila de saída de cada inscrito do tópico.
 func (b *Broker) entregar(m scheduler.Message) {
 	for _, endereco := range b.router.GetSubscribers(m.Topic) {
-		b.outbox.Deliver(endereco, m.Payload, m.Priority)
+		b.outbox.Deliver(endereco, m)
 	}
 }
 

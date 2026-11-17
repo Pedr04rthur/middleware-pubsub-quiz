@@ -1,10 +1,13 @@
 package broker
 
 import (
+	"encoding/json"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/aggregator"
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/answerwindow"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
 )
@@ -127,6 +130,87 @@ func TestPublishIsDeliveredThroughScheduler(t *testing.T) {
 			t.Fatalf("a pergunta deveria passar pelo escalonador como crítica, stats %+v", b.escalonador.Stats())
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestReactionBurstIsAggregated(t *testing.T) {
+	b, done := startBroker(t)
+	defer func() { b.Close(); <-done }()
+
+	const topico = "quiz/s1/reacoes"
+	telao := dial(t, b)
+	request(t, telao, protocol.CmdCreateTopic, topico)
+	request(t, telao, protocol.CmdSubscribe, topico)
+
+	const jogadores, porJogador = 5, 10
+	for i := 0; i < jogadores; i++ {
+		j := dial(t, b)
+		for k := 0; k < porJogador; k++ {
+			j.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: topico, Payload: []byte("👏")}).Serialize())
+		}
+	}
+
+	total, mensagens := 0, 0
+	for total < jogadores*porJogador {
+		m := receive(t, telao)
+		if m.Command != protocol.CmdPublish {
+			continue
+		}
+		var resumo aggregator.Summary
+		if err := json.Unmarshal(m.Payload, &resumo); err != nil {
+			t.Fatalf("o telão deveria receber um resumo JSON, recebeu %q", m.Payload)
+		}
+		total += resumo.Reactions["👏"]
+		mensagens++
+	}
+	if mensagens > 2 {
+		t.Fatalf("%d reações deveriam virar no máximo 2 resumos, viraram %d", jogadores*porJogador, mensagens)
+	}
+}
+
+func TestLateAnswersAreDropped(t *testing.T) {
+	b, err := New("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.janela = answerwindow.New(100 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { b.Run(); close(done) }()
+	defer func() { b.Close(); <-done }()
+
+	host, jogador, apurador := dial(t, b), dial(t, b), dial(t, b)
+	request(t, host, protocol.CmdCreateTopic, "quiz/s1/perguntas")
+	request(t, host, protocol.CmdCreateTopic, "quiz/s1/respostas")
+	request(t, jogador, protocol.CmdSubscribe, "quiz/s1/perguntas")
+	request(t, apurador, protocol.CmdSubscribe, "quiz/s1/respostas")
+
+	publicar := func(conn *net.UDPConn, topico, payload string) {
+		conn.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: topico, Payload: []byte(payload)}).Serialize())
+	}
+	esperarPublicacao := func(conn *net.UDPConn) *protocol.Message {
+		for {
+			if m := receive(t, conn); m.Command == protocol.CmdPublish {
+				return m
+			}
+		}
+	}
+
+	publicar(host, "quiz/s1/perguntas", "pergunta 1")
+	esperarPublicacao(jogador)
+	publicar(jogador, "quiz/s1/respostas", "no prazo")
+	if got := esperarPublicacao(apurador); string(got.Payload) != "no prazo" {
+		t.Fatalf("apurador recebeu %q", got.Payload)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	publicar(jogador, "quiz/s1/respostas", "atrasada")
+
+	publicar(host, "quiz/s1/perguntas", "pergunta 2")
+	esperarPublicacao(jogador)
+	publicar(jogador, "quiz/s1/respostas", "pergunta 2 no prazo")
+
+	if got := esperarPublicacao(apurador); string(got.Payload) != "pergunta 2 no prazo" {
+		t.Fatalf("a resposta atrasada deveria ter caducado, mas o apurador recebeu %q", got.Payload)
 	}
 }
 
