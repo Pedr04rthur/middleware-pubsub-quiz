@@ -3,6 +3,7 @@ package outbox
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -257,6 +258,57 @@ func TestExpiredMessagesAreNotSent(t *testing.T) {
 	}
 	if st, _ := h.Stats("a"); st.Expired != 1 {
 		t.Fatalf("1 mensagem deveria ter caducado, stats %+v", st)
+	}
+}
+
+func TestHooksReportSentAndDropped(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
+	cfg := Config{
+		QueueSize: 1,
+		OnSent:    func(id string, m scheduler.Message) { record(id + ":enviada:" + string(m.Payload)) },
+		OnDrop: func(id string, m scheduler.Message, reason string) {
+			record(id + ":" + reason + ":" + string(m.Payload))
+		},
+	}
+	h := NewHub(cfg, nil)
+	send, entered, release, _ := blockingSender()
+	h.Add("a", send)
+
+	deliver(h, "a", []byte("1"))
+	<-entered
+	deliver(h, "a", []byte("2"))
+	deliver(h, "a", []byte("3"))
+	h.Deliver("a", scheduler.Message{Payload: []byte("velha"), Priority: scheduler.Critical, ExpiresAt: time.Now().Add(10 * time.Millisecond)})
+	deliver(h, "ninguem", []byte("4"))
+	time.Sleep(30 * time.Millisecond)
+
+	close(release)
+	waitFor(t, "os envios terminarem", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) == 5
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"a:fila_saida_cheia:2",
+		"ninguem:sem_fila:4",
+		"a:enviada:1",
+		"a:expirada:velha",
+		"a:enviada:3",
+	}
+	got := fmt.Sprint(events)
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Fatalf("faltou o evento %q em %v", w, events)
+		}
 	}
 }
 
