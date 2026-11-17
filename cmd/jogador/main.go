@@ -1,54 +1,63 @@
+// Comando jogador demonstra a biblioteca cliente (pkg/client) contra o broker:
+// cria um tópico, se inscreve, publica, recebe e desconecta.
 package main
 
 import (
+	"flag"
 	"fmt"
-	"net"
+	"log"
 	"time"
 
-	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/client"
 )
 
 func main() {
-	serverAddr, _ := net.ResolveUDPAddr("udp", "localhost:8080")
-	conn, err := net.DialUDP("udp", nil, serverAddr)
+	brokerAddr := flag.String("broker", "localhost:8080", "endereco UDP do broker")
+	sala := flag.String("sala", "sala1", "nome da sala do quiz")
+	flag.Parse()
+
+	topico := fmt.Sprintf("quiz/%s/perguntas", *sala)
+
+	cfg := client.DefaultConfig()
+	cfg.OnPublishNack = func(topico, motivo string) {
+		fmt.Printf("[AVISO] publicacao em %s descartada: %s\n", topico, motivo)
+	}
+
+	fmt.Println("1. Conectar")
+	c, err := client.Connect(*brokerAddr, cfg)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	defer conn.Close()
+	fmt.Printf("   conectado como %s\n", c.LocalAddr())
 
-	buffer := make([]byte, 1024)
-
-	enviar := func(cmd byte, topic string, payload string) {
-		msg := &protocol.Message{Command: cmd, Topic: topic, Payload: []byte(payload)}
-		conn.Write(msg.Serialize())
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Printf("Timeout: %v\n", err)
-			return
-		}
-		resp, _ := protocol.Deserialize(buffer[:n])
-		status := "ACK"
-		if resp.Command == protocol.CmdNack {
-			status = "NACK"
-		}
-		fmt.Printf("[%s] Topico=%s Payload=%s\n", status, resp.Topic, string(resp.Payload))
+	fmt.Println("2. Criar topico")
+	if err := c.CreateTopic(topico); err != nil {
+		fmt.Printf("   %v\n", err) // ex.: topico ja existe
 	}
 
-	fmt.Println("1. Criar topico")
-	enviar(protocol.CmdCreateTopic, "quiz/sala1/perguntas", "")
-	fmt.Println("\n2. Se inscrever no topico")
-	enviar(protocol.CmdSubscribe, "quiz/sala1/perguntas", "")
-	fmt.Println("\n3. Publicar (deve entregar para mim mesmo)")
-	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital?")
-	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-	n, err := conn.Read(buffer)
-	if err == nil {
-		resp, _ := protocol.Deserialize(buffer[:n])
-		fmt.Printf("[RECEBIDO] Topico=%s Payload=%s\n", resp.Topic, string(resp.Payload))
+	fmt.Println("3. Se inscrever")
+	recebida := make(chan struct{})
+	err = c.Subscribe(topico, func(m client.Message) {
+		fmt.Printf("   [RECEBIDO] %s: %s\n", m.Topic, m.Payload)
+		close(recebida)
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
-	fmt.Println("\n4. Desconectar (deve limpar tudo)")
-	enviar(protocol.CmdDisconnect, "quiz/sala1/perguntas", "")
-	fmt.Println("\n5. Tentar publicar novamente (deve dar NACK: sem inscritos)")
-	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Teste apos disconnect")
+
+	fmt.Println("4. Publicar (deve entregar para mim mesmo)")
+	if err := c.Publish(topico, []byte("Qual a capital da Paraiba?")); err != nil {
+		log.Fatal(err)
+	}
+	select {
+	case <-recebida:
+	case <-time.After(2 * time.Second):
+		fmt.Println("   mensagem nao chegou (perda e aceitavel no at-most-once)")
+	}
+
+	fmt.Println("5. Desconectar")
+	if err := c.Disconnect(); err != nil {
+		fmt.Printf("   %v\n", err)
+	}
+	fmt.Printf("   stats: %+v\n", c.Stats())
 }
