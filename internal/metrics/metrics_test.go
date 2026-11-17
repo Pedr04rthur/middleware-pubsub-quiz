@@ -138,6 +138,24 @@ func TestResourcesMeasureCPUAndMemory(t *testing.T) {
 	t.Logf("recursos: %+v", s)
 }
 
+func TestNanotimeHasFineResolution(t *testing.T) {
+	last := Nanotime()
+	var step int64
+	for step == 0 {
+		step = Nanotime() - last
+	}
+	if step < 0 || time.Duration(step) > 50*time.Microsecond {
+		t.Fatalf("o relógio deveria avançar em passos bem menores que 50µs, passo = %v", time.Duration(step))
+	}
+
+	start := Nanotime()
+	time.Sleep(2 * time.Millisecond)
+	if d := Since(start); d < 2*time.Millisecond || d > 200*time.Millisecond {
+		t.Fatalf("sleep de 2ms medido como %v", d)
+	}
+	t.Logf("passo do relógio: %v", time.Duration(step))
+}
+
 func TestRegistryHandlerAndReport(t *testing.T) {
 	r := NewRegistry()
 	r.Latency("entrega").Observe(3 * time.Millisecond)
