@@ -86,6 +86,9 @@ type Message struct {
 	Topic   string
 	Payload []byte
 	From    string
+	// ReceivedNs é quando o broker recebeu a mensagem (metrics.Nanotime), usado
+	// para medir a latência interna; zero se não medido.
+	ReceivedNs int64
 
 	// Preenchidos pelo escalonador em Publish.
 	Priority   Priority
