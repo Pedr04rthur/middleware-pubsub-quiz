@@ -9,43 +9,39 @@ import (
 )
 
 func main() {
-	// Conecta ao Broker UDP no localhost:8080
-	serverAddr, err := net.ResolveUDPAddr("udp", "localhost:8080")
-	if err != nil {
-		panic(err)
-	}
-
+	serverAddr, _ := net.ResolveUDPAddr("udp", "localhost:8080")
 	conn, err := net.DialUDP("udp", nil, serverAddr)
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	fmt.Println("Jogador conectado ao broker UDP")
-
-	// Simula um jogador enviando uma resposta
-	mensagem := &protocol.Message{
-		Command: protocol.CmdPublish,
-		Topic:   "quiz/sala1/respostas",
-		Payload: []byte("Paris"),
-	}
-
-	// Envia
-	_, err = conn.Write(mensagem.Serialize())
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Mensagem enviada:", string(mensagem.Payload))
-
-	// Espera um ACK
 	buffer := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Timeout esperando ACK:", err)
-		return
+
+	// Função auxiliar para enviar e esperar resposta
+	enviar := func(cmd byte, topic string, payload string) {
+		msg := &protocol.Message{Command: cmd, Topic: topic, Payload: []byte(payload)}
+		conn.Write(msg.Serialize())
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(buffer)
+		if err != nil {
+			fmt.Printf("Timeout em %d: %v\n", cmd, err)
+			return
+		}
+		resp, _ := protocol.Deserialize(buffer[:n])
+		fmt.Printf("Resposta: Comando=%d, Topico=%s, Payload=%s\n", resp.Command, resp.Topic, string(resp.Payload))
 	}
 
-	ack, _ := protocol.Deserialize(buffer[:n])
-	fmt.Printf("ACK recebido: Comando=%d, Payload=%s\n", ack.Command, string(ack.Payload))
+	// 1. Cria tópico
+	enviar(protocol.CmdCreateTopic, "quiz/sala1/perguntas", "")
+
+	// 2. Inscreve-se
+	enviar(protocol.CmdSubscribe, "quiz/sala1/perguntas", "")
+
+	// 3. Publica uma pergunta
+	enviar(protocol.CmdPublish, "quiz/sala1/perguntas", "Qual a capital da Franca?")
+
+	// 4. Remove o tópico (encerra a sala)
+	enviar(protocol.CmdRemoveTopic, "quiz/sala1/perguntas", "")
 }
