@@ -40,15 +40,15 @@ func TestBarulhentosNaoPrejudicamOsDemais(t *testing.T) {
 	cfg.Broker = b.Addr()
 	cfg.Jogadores = 500
 	cfg.Barulhentos = 50
-	cfg.ReacoesPorBarulhento = 100 // 5000 reações/s no total
-	// Jogadores normais sem reações: reações e respostas dividem o mesmo
-	// balde do rate limit, e com o fator global de carga uma reação pode
-	// consumir a ficha da resposta (ver docs/melhorias.md).
-	cfg.ReacoesPorJogador = 0
+	cfg.ReacoesPorBarulhento = 400 // 20.000 reações/s: 20x o limiar de carga do broker
+	// Jogadores normais também reagem: antes da correção, com o broker
+	// sobrecarregado pelo spam, o balde de todos caía para 1 ficha e uma
+	// reação gastava a ficha da resposta.
+	cfg.ReacoesPorJogador = 2
 	cfg.PerguntasPorFase = 3
 	cfg.IntervaloPergunta = 500 * time.Millisecond
 	cfg.JanelaRajada = 200 * time.Millisecond
-	cfg.Aquecimento = time.Second
+	cfg.Aquecimento = 2 * time.Second
 	cfg.MetricasBroker = func() (*metrics.Snapshot, error) {
 		s := b.Metrics().Snapshot()
 		return &s, nil
@@ -81,7 +81,7 @@ func TestBarulhentosNaoPrejudicamOsDemais(t *testing.T) {
 	if base.ReacoesBarulhentos != 0 {
 		t.Errorf("barulhentos reagiram na linha de base: %d", base.ReacoesBarulhentos)
 	}
-	if barulho.ReacoesBarulhentos < 5000 {
+	if barulho.ReacoesBarulhentos < 20000 {
 		t.Fatalf("barulhentos mandaram so %d reacoes", barulho.ReacoesBarulhentos)
 	}
 	limitadas := barulho.DescartesBroker["quiz/carga/reacoes"]["rate_limit"]
