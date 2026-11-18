@@ -154,6 +154,56 @@ func TestAnswersExpireAfterTTL(t *testing.T) {
 	}
 }
 
+func TestOnDropReportsWhichMessageAndWhy(t *testing.T) {
+	var mu sync.Mutex
+	var drops []string
+	cfg := DefaultConfig()
+	cfg.LowQueueSize = 2
+	cfg.CriticalQueueSize = 1
+	cfg.LowMaxAge = time.Second
+	cfg.OnDrop = func(m Message, reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		drops = append(drops, fmt.Sprintf("%s:%s:%s", m.Topic, m.Payload, reason))
+	}
+	rec := newRecorder(1)
+	s := New(cfg, rec.handle)
+
+	now := time.Unix(0, 0)
+	s.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+
+	for i := 0; i < 3; i++ {
+		s.Publish(Message{Topic: "quiz/s1/reacoes", Payload: []byte(fmt.Sprint(i))})
+	}
+	s.Publish(Message{Topic: "quiz/s1/placar", Payload: []byte("a")})
+	s.Publish(Message{Topic: "quiz/s1/placar", Payload: []byte("b")})
+
+	mu.Lock()
+	now = now.Add(5 * time.Second)
+	mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	rec.wait(t)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"quiz/s1/reacoes:0:fila_cheia",
+		"quiz/s1/placar:b:fila_cheia",
+		"quiz/s1/reacoes:1:expirada",
+		"quiz/s1/reacoes:2:expirada",
+	}
+	if fmt.Sprint(drops) != fmt.Sprint(want) {
+		t.Fatalf("descartes informados:\n %v\nesperado:\n %v", drops, want)
+	}
+}
+
 func TestAnswerTTLIsClampedToWindow(t *testing.T) {
 	cases := map[time.Duration]time.Duration{
 		time.Second:      MinAnswerTTL,

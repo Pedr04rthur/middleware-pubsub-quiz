@@ -8,6 +8,7 @@ import (
 
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/aggregator"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/answerwindow"
+	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/metrics"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/internal/scheduler"
 	"github.com/Pedr04rthur/middleware-pubsub-quiz/pkg/protocol"
 )
@@ -211,6 +212,91 @@ func TestLateAnswersAreDropped(t *testing.T) {
 
 	if got := esperarPublicacao(apurador); string(got.Payload) != "pergunta 2 no prazo" {
 		t.Fatalf("a resposta atrasada deveria ter caducado, mas o apurador recebeu %q", got.Payload)
+	}
+}
+
+func TestMetricsCountPublishesDeliveriesAndDrops(t *testing.T) {
+	b, err := New("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetQuiet(true)
+	b.janela = answerwindow.New(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { b.Run(); close(done) }()
+	defer func() { b.Close(); <-done }()
+
+	host, jogador, apurador := dial(t, b), dial(t, b), dial(t, b)
+	request(t, host, protocol.CmdCreateTopic, "quiz/s1/perguntas")
+	request(t, host, protocol.CmdCreateTopic, "quiz/s1/respostas")
+	request(t, jogador, protocol.CmdSubscribe, "quiz/s1/perguntas")
+	request(t, apurador, protocol.CmdSubscribe, "quiz/s1/respostas")
+
+	publicar := func(conn *net.UDPConn, topico, payload string) {
+		conn.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: topico, Payload: []byte(payload)}).Serialize())
+	}
+	publicar(host, "quiz/s1/perguntas", "p1")
+	receive(t, jogador)
+	publicar(jogador, "quiz/s1/respostas", "no prazo")
+	receive(t, apurador)
+	time.Sleep(100 * time.Millisecond)
+	publicar(jogador, "quiz/s1/respostas", "atrasada")
+	publicar(host, "quiz/s1/placar", "sem inscritos")
+
+	deadline := time.Now().Add(2 * time.Second)
+	var s metrics.Snapshot
+	for {
+		s = b.Metrics().Snapshot()
+		if s.Topics["quiz/s1/respostas"].PublishDropped == 1 && s.Topics["quiz/s1/placar"].PublishDropped == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("descartes não registrados: %+v", s.Topics)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	respostas := s.Topics["quiz/s1/respostas"]
+	if respostas.Published != 2 || respostas.Delivered != 1 || respostas.PublishDrops[DropOutsideWindow] != 1 || respostas.PublishDropRate != 0.5 {
+		t.Fatalf("métricas de respostas erradas: %+v", respostas)
+	}
+	if s.Topics["quiz/s1/placar"].PublishDrops[DropNoSubscribers] != 1 {
+		t.Fatalf("publicação sem inscritos não contada: %+v", s.Topics["quiz/s1/placar"])
+	}
+	if s.Topics["quiz/s1/perguntas"].Delivered != 1 {
+		t.Fatalf("entrega da pergunta não contada: %+v", s.Topics["quiz/s1/perguntas"])
+	}
+	if s.Meters[MeterAnswers].Count != 1 {
+		t.Fatalf("vazão de respostas deveria contar só a aceita: %+v", s.Meters[MeterAnswers])
+	}
+	if l := s.Latencies[LatencyPrefix+"critica"]; l.Count != 1 || l.MaxMs <= 0 {
+		t.Fatalf("latência da pergunta não medida: %+v", l)
+	}
+}
+
+func TestMetricsCountRateLimitDrops(t *testing.T) {
+	b, done := startBroker(t)
+	b.SetQuiet(true)
+	defer func() { b.Close(); <-done }()
+
+	conn := dial(t, b)
+	for i := 0; i < 100; i++ {
+		conn.Write((&protocol.Message{Command: protocol.CmdPublish, Topic: "quiz/s1/reacoes", Payload: []byte("👏")}).Serialize())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r := b.Metrics().Snapshot().Topics["quiz/s1/reacoes"]
+		if r.Published == 100 {
+			if r.PublishDrops[DropRateLimit] < 50 {
+				t.Fatalf("100 publicações seguidas deveriam estourar o rate limit (rajada de 20): %+v", r)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("publicações não contadas: %+v", r)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

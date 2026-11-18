@@ -86,6 +86,9 @@ type Message struct {
 	Topic   string
 	Payload []byte
 	From    string
+	// ReceivedNs é quando o broker recebeu a mensagem (metrics.Nanotime), usado
+	// para medir a latência interna; zero se não medido.
+	ReceivedNs int64
 
 	// Preenchidos pelo escalonador em Publish.
 	Priority   Priority
@@ -113,7 +116,18 @@ type Config struct {
 	// AnswerTTL é a validade das respostas (tópico quiz/{sala}/respostas),
 	// limitada à janela [MinAnswerTTL, MaxAnswerTTL]. Zero desativa.
 	AnswerTTL time.Duration
+
+	// OnDrop, se definido, é chamado para cada mensagem descartada, com o
+	// motivo (DropQueueFull ou DropExpired). Deve ser rápido: roda no caminho
+	// de cada mensagem.
+	OnDrop func(m Message, reason string)
 }
+
+// Motivos de descarte informados a Config.OnDrop.
+const (
+	DropQueueFull = "fila_cheia"
+	DropExpired   = "expirada"
+)
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo.
 func DefaultConfig() Config {
@@ -186,10 +200,12 @@ func (s *Scheduler) Publish(m Message) bool {
 
 	s.dropped[m.Priority].Add(1)
 	if m.Priority != Low {
+		s.notifyDrop(m, DropQueueFull)
 		return false
 	}
 	select {
-	case <-q:
+	case old := <-q:
+		s.notifyDrop(old, DropQueueFull)
 	default:
 	}
 	select {
@@ -197,7 +213,14 @@ func (s *Scheduler) Publish(m Message) bool {
 		s.enqueued[m.Priority].Add(1)
 		return true
 	default:
+		s.notifyDrop(m, DropQueueFull)
 		return false
+	}
+}
+
+func (s *Scheduler) notifyDrop(m Message, reason string) {
+	if s.cfg.OnDrop != nil {
+		s.cfg.OnDrop(m, reason)
 	}
 }
 
@@ -220,6 +243,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		}
 		if m.Expired(s.now()) {
 			s.expired[m.Priority].Add(1)
+			s.notifyDrop(m, DropExpired)
 			continue
 		}
 		s.handler(m)

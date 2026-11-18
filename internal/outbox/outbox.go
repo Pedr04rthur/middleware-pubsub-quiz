@@ -32,7 +32,23 @@ type Config struct {
 	// ele é desconectado. MaxDrops zero desativa a desconexão (só descarta).
 	MaxDrops   int
 	DropWindow time.Duration
+
+	// OnSent e OnDrop, se definidos, são chamados para cada mensagem enviada
+	// ou descartada (com um dos motivos Drop*).
+	// Devem ser rápidos: rodam no caminho de cada mensagem.
+	OnSent func(id string, m scheduler.Message)
+	OnDrop func(id string, m scheduler.Message, reason string)
 }
+
+// Motivos de descarte informados a Config.OnDrop.
+const (
+	DropQueueFull = "fila_saida_cheia"
+	DropExpired   = "expirada"
+	// DropNoQueue indica que o inscrito não tem (ou não tem mais) fila de saída.
+	DropNoQueue = "sem_fila"
+	// DropSendError indica que o envio falhou (e o inscrito foi desconectado).
+	DropSendError = "erro_envio"
+)
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo.
 func DefaultConfig() Config {
@@ -167,9 +183,11 @@ func (h *Hub) Deliver(id string, m scheduler.Message) Result {
 	h.mu.RUnlock()
 
 	if s == nil {
+		h.notifyDrop(id, m, DropNoQueue)
 		return Unknown
 	}
 	if s.stopped() {
+		h.notifyDrop(id, m, DropNoQueue)
 		return Disconnected
 	}
 	if m.Priority < 0 || m.Priority >= scheduler.NumPriorities {
@@ -183,13 +201,21 @@ func (h *Hub) Deliver(id string, m scheduler.Message) Result {
 	default:
 	}
 
+	dropped := false
 	select {
-	case <-q:
+	case old := <-q:
+		h.notifyDrop(id, old, DropQueueFull)
+		dropped = true
 	default:
 	}
 	select {
 	case q <- m:
 	default:
+		h.notifyDrop(id, m, DropQueueFull)
+		dropped = true
+	}
+	if !dropped {
+		return Queued
 	}
 	s.dropped.Add(1)
 
@@ -231,13 +257,24 @@ func (h *Hub) run(s *subscriber) {
 		}
 		if m.Expired(h.now()) {
 			s.expired.Add(1)
+			h.notifyDrop(s.id, m, DropExpired)
 			continue
 		}
 		if err := s.send(m.Payload); err != nil {
+			h.notifyDrop(s.id, m, DropSendError)
 			h.disconnect(s, err)
 			return
 		}
 		s.sent.Add(1)
+		if h.cfg.OnSent != nil {
+			h.cfg.OnSent(s.id, m)
+		}
+	}
+}
+
+func (h *Hub) notifyDrop(id string, m scheduler.Message, reason string) {
+	if h.cfg.OnDrop != nil {
+		h.cfg.OnDrop(id, m, reason)
 	}
 }
 
