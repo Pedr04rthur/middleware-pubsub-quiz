@@ -32,7 +32,23 @@ type Config struct {
 	// ele é desconectado. MaxDrops zero desativa a desconexão (só descarta).
 	MaxDrops   int
 	DropWindow time.Duration
+
+	// OnSent e OnDrop, se definidos, são chamados para cada mensagem enviada
+	// ou descartada (com um dos motivos Drop*).
+	// Devem ser rápidos: rodam no caminho de cada mensagem.
+	OnSent func(id string, m scheduler.Message)
+	OnDrop func(id string, m scheduler.Message, reason string)
 }
+
+// Motivos de descarte informados a Config.OnDrop.
+const (
+	DropQueueFull = "fila_saida_cheia"
+	DropExpired   = "expirada"
+	// DropNoQueue indica que o inscrito não tem (ou não tem mais) fila de saída.
+	DropNoQueue = "sem_fila"
+	// DropSendError indica que o envio falhou (e o inscrito foi desconectado).
+	DropSendError = "erro_envio"
+)
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo.
 func DefaultConfig() Config {
@@ -61,18 +77,21 @@ const (
 type Stats struct {
 	Sent    int64
 	Dropped int64
+	// Expired são mensagens que caducaram (ExpiresAt) antes de serem enviadas.
+	Expired int64
 	Pending int
 }
 
 type subscriber struct {
 	id     string
 	send   Sender
-	queues [scheduler.NumPriorities]chan []byte
+	queues [scheduler.NumPriorities]chan scheduler.Message
 	done   chan struct{}
 	once   sync.Once
 
 	sent    atomic.Int64
 	dropped atomic.Int64
+	expired atomic.Int64
 
 	mu          sync.Mutex
 	windowStart time.Time
@@ -138,7 +157,7 @@ func (h *Hub) Ensure(id string, send Sender) bool {
 func (h *Hub) newSubscriber(id string, send Sender) *subscriber {
 	s := &subscriber{id: id, send: send, done: make(chan struct{})}
 	for p := range s.queues {
-		s.queues[p] = make(chan []byte, h.cfg.QueueSize)
+		s.queues[p] = make(chan scheduler.Message, h.cfg.QueueSize)
 	}
 	return s
 }
@@ -155,37 +174,48 @@ func (h *Hub) Remove(id string) {
 	}
 }
 
-// Deliver coloca a mensagem na faixa da prioridade dada na fila do inscrito.
-// Nunca bloqueia, então um inscrito lento não atrasa a entrega para os outros.
-func (h *Hub) Deliver(id string, payload []byte, prio scheduler.Priority) Result {
+// Deliver coloca a mensagem na faixa da sua prioridade na fila do inscrito.
+// Se m.ExpiresAt passar antes do envio, ela é descartada. Nunca bloqueia, então
+// um inscrito lento não atrasa a entrega para os outros.
+func (h *Hub) Deliver(id string, m scheduler.Message) Result {
 	h.mu.RLock()
 	s := h.subs[id]
 	h.mu.RUnlock()
 
 	if s == nil {
+		h.notifyDrop(id, m, DropNoQueue)
 		return Unknown
 	}
 	if s.stopped() {
+		h.notifyDrop(id, m, DropNoQueue)
 		return Disconnected
 	}
-	if prio < 0 || prio >= scheduler.NumPriorities {
-		prio = scheduler.Normal
+	if m.Priority < 0 || m.Priority >= scheduler.NumPriorities {
+		m.Priority = scheduler.Normal
 	}
-	q := s.queues[prio]
+	q := s.queues[m.Priority]
 
 	select {
-	case q <- payload:
+	case q <- m:
 		return Queued
 	default:
 	}
 
+	dropped := false
 	select {
-	case <-q:
+	case old := <-q:
+		h.notifyDrop(id, old, DropQueueFull)
+		dropped = true
 	default:
 	}
 	select {
-	case q <- payload:
+	case q <- m:
 	default:
+		h.notifyDrop(id, m, DropQueueFull)
+		dropped = true
+	}
+	if !dropped {
+		return Queued
 	}
 	s.dropped.Add(1)
 
@@ -209,7 +239,7 @@ func (h *Hub) Stats(id string) (Stats, bool) {
 	for _, q := range s.queues {
 		pending += len(q)
 	}
-	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Pending: pending}, true
+	return Stats{Sent: s.sent.Load(), Dropped: s.dropped.Load(), Expired: s.expired.Load(), Pending: pending}, true
 }
 
 // Len retorna quantos inscritos estão ativos.
@@ -221,41 +251,56 @@ func (h *Hub) Len() int {
 
 func (h *Hub) run(s *subscriber) {
 	for {
-		payload, ok := s.next()
+		m, ok := s.next()
 		if !ok {
 			return
 		}
-		if err := s.send(payload); err != nil {
+		if m.Expired(h.now()) {
+			s.expired.Add(1)
+			h.notifyDrop(s.id, m, DropExpired)
+			continue
+		}
+		if err := s.send(m.Payload); err != nil {
+			h.notifyDrop(s.id, m, DropSendError)
 			h.disconnect(s, err)
 			return
 		}
 		s.sent.Add(1)
+		if h.cfg.OnSent != nil {
+			h.cfg.OnSent(s.id, m)
+		}
+	}
+}
+
+func (h *Hub) notifyDrop(id string, m scheduler.Message, reason string) {
+	if h.cfg.OnDrop != nil {
+		h.cfg.OnDrop(id, m, reason)
 	}
 }
 
 // next retorna a próxima mensagem a enviar, sempre da faixa de maior
 // prioridade que tiver alguma, esperando se todas estiverem vazias.
-func (s *subscriber) next() ([]byte, bool) {
+func (s *subscriber) next() (scheduler.Message, bool) {
 	if s.stopped() {
-		return nil, false
+		return scheduler.Message{}, false
 	}
 	for _, q := range s.queues {
 		select {
-		case p := <-q:
-			return p, true
+		case m := <-q:
+			return m, true
 		default:
 		}
 	}
 
 	select {
 	case <-s.done:
-		return nil, false
-	case p := <-s.queues[scheduler.Critical]:
-		return p, true
-	case p := <-s.queues[scheduler.Normal]:
-		return p, true
-	case p := <-s.queues[scheduler.Low]:
-		return p, true
+		return scheduler.Message{}, false
+	case m := <-s.queues[scheduler.Critical]:
+		return m, true
+	case m := <-s.queues[scheduler.Normal]:
+		return m, true
+	case m := <-s.queues[scheduler.Low]:
+		return m, true
 	}
 }
 

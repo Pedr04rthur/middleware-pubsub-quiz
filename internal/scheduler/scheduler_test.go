@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -80,19 +81,15 @@ func TestCriticalIsDeliveredBeforeQueuedReactions(t *testing.T) {
 	}
 }
 
-func TestFullLowQueueDropsOnlyReactions(t *testing.T) {
+func TestReactionBurstDropsOldest(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.LowQueueSize = 5
 	s := New(cfg, func(Message) {})
 
-	accepted := 0
 	for i := 0; i < 10; i++ {
-		if s.Publish(Message{Topic: "quiz/sala1/reacoes"}) {
-			accepted++
+		if !s.Publish(Message{Topic: "quiz/sala1/reacoes", Payload: []byte(fmt.Sprint(i))}) {
+			t.Fatalf("a reação %d deveria entrar no lugar da mais antiga", i)
 		}
-	}
-	if accepted != 5 {
-		t.Fatalf("só 5 reações deveriam caber na fila, aceitas %d", accepted)
 	}
 	if !s.Publish(Message{Topic: "quiz/sala1/perguntas"}) {
 		t.Fatal("pergunta deveria entrar mesmo com a fila de reações cheia")
@@ -101,6 +98,134 @@ func TestFullLowQueueDropsOnlyReactions(t *testing.T) {
 	st := s.Stats()
 	if st.Dropped[Low] != 5 || st.Dropped[Critical] != 0 {
 		t.Fatalf("descartes inesperados: %+v", st.Dropped)
+	}
+	var kept []string
+	for len(s.queues[Low]) > 0 {
+		kept = append(kept, string((<-s.queues[Low]).Payload))
+	}
+	if want := []string{"5", "6", "7", "8", "9"}; fmt.Sprint(kept) != fmt.Sprint(want) {
+		t.Fatalf("deveriam sobrar as 5 reações mais novas %v, sobraram %v", want, kept)
+	}
+}
+
+func TestFullCriticalQueueRefusesNewMessage(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CriticalQueueSize = 1
+	s := New(cfg, func(Message) {})
+
+	s.Publish(Message{Topic: "quiz/sala1/perguntas", Payload: []byte("1")})
+	if s.Publish(Message{Topic: "quiz/sala1/perguntas", Payload: []byte("2")}) {
+		t.Fatal("fila crítica cheia deveria recusar a nova pergunta em vez de descartar a anterior")
+	}
+	if got := string((<-s.queues[Critical]).Payload); got != "1" {
+		t.Fatalf("a primeira pergunta deveria ter sido mantida, sobrou %q", got)
+	}
+}
+
+func TestAnswersExpireAfterTTL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AnswerTTL = 5 * time.Second
+	rec := newRecorder(1)
+	s := New(cfg, rec.handle)
+
+	var mu sync.Mutex
+	now := time.Unix(0, 0)
+	s.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+
+	s.Publish(Message{Topic: "quiz/sala1/respostas", Payload: []byte("atrasada")})
+	mu.Lock()
+	now = now.Add(6 * time.Second)
+	mu.Unlock()
+	s.Publish(Message{Topic: "quiz/sala1/respostas", Payload: []byte("no prazo")})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+
+	rec.wait(t)
+	time.Sleep(50 * time.Millisecond)
+	st := s.Stats()
+	if st.Expired[Normal] != 1 || st.Delivered[Normal] != 1 {
+		t.Fatalf("a resposta velha deveria caducar e a nova ser entregue, stats %+v", st)
+	}
+}
+
+func TestOnDropReportsWhichMessageAndWhy(t *testing.T) {
+	var mu sync.Mutex
+	var drops []string
+	cfg := DefaultConfig()
+	cfg.LowQueueSize = 2
+	cfg.CriticalQueueSize = 1
+	cfg.LowMaxAge = time.Second
+	cfg.OnDrop = func(m Message, reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		drops = append(drops, fmt.Sprintf("%s:%s:%s", m.Topic, m.Payload, reason))
+	}
+	rec := newRecorder(1)
+	s := New(cfg, rec.handle)
+
+	now := time.Unix(0, 0)
+	s.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+
+	for i := 0; i < 3; i++ {
+		s.Publish(Message{Topic: "quiz/s1/reacoes", Payload: []byte(fmt.Sprint(i))})
+	}
+	s.Publish(Message{Topic: "quiz/s1/placar", Payload: []byte("a")})
+	s.Publish(Message{Topic: "quiz/s1/placar", Payload: []byte("b")})
+
+	mu.Lock()
+	now = now.Add(5 * time.Second)
+	mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	rec.wait(t)
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"quiz/s1/reacoes:0:fila_cheia",
+		"quiz/s1/placar:b:fila_cheia",
+		"quiz/s1/reacoes:1:expirada",
+		"quiz/s1/reacoes:2:expirada",
+	}
+	if fmt.Sprint(drops) != fmt.Sprint(want) {
+		t.Fatalf("descartes informados:\n %v\nesperado:\n %v", drops, want)
+	}
+}
+
+func TestAnswerTTLIsClampedToWindow(t *testing.T) {
+	cases := map[time.Duration]time.Duration{
+		time.Second:      MinAnswerTTL,
+		10 * time.Second: 10 * time.Second,
+		time.Minute:      MaxAnswerTTL,
+	}
+	for in, want := range cases {
+		if got := ClampAnswerTTL(in); got != want {
+			t.Errorf("ClampAnswerTTL(%v) = %v, esperado %v", in, got, want)
+		}
+	}
+}
+
+func TestParseTopic(t *testing.T) {
+	room, kind, ok := ParseTopic("quiz/sala1/respostas")
+	if !ok || room != "sala1" || kind != KindAnswers {
+		t.Fatalf("ParseTopic = %q, %q, %v", room, kind, ok)
+	}
+	for _, invalid := range []string{"quiz/sala1", "quiz//respostas", "quiz/sala1/", "outro/sala1/respostas"} {
+		if _, _, ok := ParseTopic(invalid); ok {
+			t.Errorf("ParseTopic(%q) deveria ser inválido", invalid)
+		}
 	}
 }
 

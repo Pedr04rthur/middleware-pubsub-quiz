@@ -37,16 +37,45 @@ func (p Priority) String() string {
 	return "desconhecida"
 }
 
+// Tipos de tópico do quiz (o último segmento de quiz/{sala}/{tipo}).
+const (
+	KindQuestions = "perguntas"
+	KindScore     = "placar"
+	KindReactions = "reacoes"
+	KindAnswers   = "respostas"
+)
+
+// Limites da janela de validade das respostas.
+const (
+	MinAnswerTTL = 5 * time.Second
+	MaxAnswerTTL = 20 * time.Second
+)
+
+// ClampAnswerTTL ajusta d para dentro da janela [MinAnswerTTL, MaxAnswerTTL].
+func ClampAnswerTTL(d time.Duration) time.Duration {
+	return min(max(d, MinAnswerTTL), MaxAnswerTTL)
+}
+
+// ParseTopic separa um tópico quiz/{sala}/{tipo}; ok é false para qualquer
+// outro formato.
+func ParseTopic(topic string) (room, kind string, ok bool) {
+	parts := strings.Split(topic, "/")
+	if len(parts) != 3 || parts[0] != "quiz" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
 // Classify define a prioridade de um tópico no formato quiz/{sala}/{tipo}.
 func Classify(topic string) Priority {
-	parts := strings.Split(topic, "/")
-	if len(parts) != 3 || parts[0] != "quiz" || parts[1] == "" {
+	_, kind, ok := ParseTopic(topic)
+	if !ok {
 		return Normal
 	}
-	switch parts[2] {
-	case "perguntas", "placar":
+	switch kind {
+	case KindQuestions, KindScore:
 		return Critical
-	case "reacoes":
+	case KindReactions:
 		return Low
 	}
 	return Normal
@@ -57,22 +86,48 @@ type Message struct {
 	Topic   string
 	Payload []byte
 	From    string
+	// ReceivedNs é quando o broker recebeu a mensagem (metrics.Nanotime), usado
+	// para medir a latência interna; zero se não medido.
+	ReceivedNs int64
 
 	// Preenchidos pelo escalonador em Publish.
 	Priority   Priority
 	EnqueuedAt time.Time
+	// ExpiresAt é quando a mensagem caduca; zero significa que não caduca.
+	ExpiresAt time.Time
 }
 
-// Config define o tamanho das filas e a validade das mensagens secundárias.
+// Expired informa se a mensagem já caducou no instante now.
+func (m Message) Expired(now time.Time) bool {
+	return !m.ExpiresAt.IsZero() && now.After(m.ExpiresAt)
+}
+
+// Config define o tamanho das filas e a validade das mensagens.
 type Config struct {
 	CriticalQueueSize int
 	NormalQueueSize   int
-	LowQueueSize      int
+	// LowQueueSize limita a fila de reações. Numa rajada, quando ela enche,
+	// a reação mais antiga é descartada para dar lugar à nova.
+	LowQueueSize int
 
-	// LowMaxAge descarta reações que esperaram mais do que isso na fila, pois
-	// uma reação atrasada já não tem valor para quem está jogando. Zero desativa.
+	// LowMaxAge é a validade das reações, pois uma reação atrasada já não tem
+	// valor para quem está jogando. Zero desativa.
 	LowMaxAge time.Duration
+	// AnswerTTL é a validade das respostas (tópico quiz/{sala}/respostas),
+	// limitada à janela [MinAnswerTTL, MaxAnswerTTL]. Zero desativa.
+	AnswerTTL time.Duration
+
+	// OnDrop, se definido, é chamado para cada mensagem descartada, com o
+	// motivo (DropQueueFull ou DropExpired). Deve ser rápido: roda no caminho
+	// de cada mensagem.
+	OnDrop func(m Message, reason string)
 }
+
+// Motivos de descarte informados a Config.OnDrop.
+const (
+	DropQueueFull = "fila_cheia"
+	DropExpired   = "expirada"
+)
 
 // DefaultConfig retorna valores razoáveis para um quiz ao vivo.
 func DefaultConfig() Config {
@@ -81,6 +136,7 @@ func DefaultConfig() Config {
 		NormalQueueSize:   1024,
 		LowQueueSize:      1024,
 		LowMaxAge:         2 * time.Second,
+		AnswerTTL:         MaxAnswerTTL,
 	}
 }
 
@@ -88,9 +144,9 @@ func DefaultConfig() Config {
 type Stats struct {
 	Enqueued  [NumPriorities]int64
 	Delivered [NumPriorities]int64
-	// Dropped são mensagens recusadas porque a fila estava cheia.
+	// Dropped são mensagens descartadas porque a fila estava cheia.
 	Dropped [NumPriorities]int64
-	// Expired são reações descartadas por terem passado de LowMaxAge.
+	// Expired são mensagens descartadas por terem caducado na fila.
 	Expired [NumPriorities]int64
 }
 
@@ -113,6 +169,9 @@ type Scheduler struct {
 // New cria um escalonador que entrega as mensagens a handler, que é chamado
 // sempre pela mesma goroutine (a de Run).
 func New(cfg Config, handler func(Message)) *Scheduler {
+	if cfg.AnswerTTL > 0 {
+		cfg.AnswerTTL = ClampAnswerTTL(cfg.AnswerTTL)
+	}
 	s := &Scheduler{cfg: cfg, handler: handler, now: time.Now}
 	s.queues[Critical] = make(chan Message, cfg.CriticalQueueSize)
 	s.queues[Normal] = make(chan Message, cfg.NormalQueueSize)
@@ -120,21 +179,59 @@ func New(cfg Config, handler func(Message)) *Scheduler {
 	return s
 }
 
-// Publish classifica a mensagem pelo tópico e a coloca na fila correspondente.
-// Nunca bloqueia: se a fila estiver cheia, a mensagem é descartada e Publish
-// retorna false, para que um pico de reações não trave a leitura do broker.
+// Publish classifica a mensagem pelo tópico, define sua validade e a coloca na
+// fila correspondente. Nunca bloqueia, para que um pico não trave a leitura do
+// broker: numa fila de reações cheia a reação mais antiga é descartada; nas
+// demais a nova é recusada e Publish retorna false.
 func (s *Scheduler) Publish(m Message) bool {
 	m.Priority = Classify(m.Topic)
 	m.EnqueuedAt = s.now()
+	if ttl := s.ttlFor(m); ttl > 0 {
+		m.ExpiresAt = m.EnqueuedAt.Add(ttl)
+	}
+	q := s.queues[m.Priority]
 
 	select {
-	case s.queues[m.Priority] <- m:
+	case q <- m:
 		s.enqueued[m.Priority].Add(1)
 		return true
 	default:
-		s.dropped[m.Priority].Add(1)
+	}
+
+	s.dropped[m.Priority].Add(1)
+	if m.Priority != Low {
+		s.notifyDrop(m, DropQueueFull)
 		return false
 	}
+	select {
+	case old := <-q:
+		s.notifyDrop(old, DropQueueFull)
+	default:
+	}
+	select {
+	case q <- m:
+		s.enqueued[m.Priority].Add(1)
+		return true
+	default:
+		s.notifyDrop(m, DropQueueFull)
+		return false
+	}
+}
+
+func (s *Scheduler) notifyDrop(m Message, reason string) {
+	if s.cfg.OnDrop != nil {
+		s.cfg.OnDrop(m, reason)
+	}
+}
+
+func (s *Scheduler) ttlFor(m Message) time.Duration {
+	if m.Priority == Low {
+		return s.cfg.LowMaxAge
+	}
+	if _, kind, ok := ParseTopic(m.Topic); ok && kind == KindAnswers {
+		return s.cfg.AnswerTTL
+	}
+	return 0
 }
 
 // Run entrega as mensagens ao handler até o contexto ser cancelado.
@@ -144,8 +241,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		if !ok {
 			return
 		}
-		if m.Priority == Low && s.cfg.LowMaxAge > 0 && s.now().Sub(m.EnqueuedAt) > s.cfg.LowMaxAge {
+		if m.Expired(s.now()) {
 			s.expired[m.Priority].Add(1)
+			s.notifyDrop(m, DropExpired)
 			continue
 		}
 		s.handler(m)

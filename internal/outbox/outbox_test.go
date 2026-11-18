@@ -3,6 +3,7 @@ package outbox
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,7 +12,11 @@ import (
 )
 
 func deliver(h *Hub, id string, payload []byte) Result {
-	return h.Deliver(id, payload, scheduler.Normal)
+	return deliverPrio(h, id, payload, scheduler.Normal)
+}
+
+func deliverPrio(h *Hub, id string, payload []byte, prio scheduler.Priority) Result {
+	return h.Deliver(id, scheduler.Message{Payload: payload, Priority: prio})
 }
 
 type collector struct {
@@ -210,14 +215,14 @@ func TestReactionsNeverEvictOrDelayCritical(t *testing.T) {
 	send, entered, release, got := blockingSender()
 	h.Add("a", send)
 
-	h.Deliver("a", []byte("em-envio"), scheduler.Normal)
+	deliverPrio(h, "a", []byte("em-envio"), scheduler.Normal)
 	<-entered
 
-	h.Deliver("a", []byte("pergunta-1"), scheduler.Critical)
+	deliverPrio(h, "a", []byte("pergunta-1"), scheduler.Critical)
 	for i := 0; i < 10; i++ {
-		h.Deliver("a", []byte(fmt.Sprintf("reacao-%d", i)), scheduler.Low)
+		deliverPrio(h, "a", []byte(fmt.Sprintf("reacao-%d", i)), scheduler.Low)
 	}
-	h.Deliver("a", []byte("placar-1"), scheduler.Critical)
+	deliverPrio(h, "a", []byte("placar-1"), scheduler.Critical)
 
 	close(release)
 	waitFor(t, "a fila esvaziar", func() bool { return len(got.snapshot()) == 6 })
@@ -226,6 +231,83 @@ func TestReactionsNeverEvictOrDelayCritical(t *testing.T) {
 	for i, m := range got.snapshot() {
 		if m != want[i] {
 			t.Fatalf("recebido %v, esperado %v", got.snapshot(), want)
+		}
+	}
+}
+
+func TestExpiredMessagesAreNotSent(t *testing.T) {
+	h := NewHub(DefaultConfig(), nil)
+	send, entered, release, got := blockingSender()
+	h.Add("a", send)
+
+	deliver(h, "a", []byte("em-envio"))
+	<-entered
+
+	h.Deliver("a", scheduler.Message{Payload: []byte("resposta-velha"), ExpiresAt: time.Now().Add(20 * time.Millisecond)})
+	h.Deliver("a", scheduler.Message{Payload: []byte("resposta-nova"), ExpiresAt: time.Now().Add(time.Hour)})
+	h.Deliver("a", scheduler.Message{Payload: []byte("sem-validade")})
+	time.Sleep(50 * time.Millisecond)
+
+	close(release)
+	waitFor(t, "a fila esvaziar", func() bool { return len(got.snapshot()) == 3 })
+	time.Sleep(20 * time.Millisecond)
+
+	want := []string{"em-envio", "resposta-nova", "sem-validade"}
+	if fmt.Sprint(got.snapshot()) != fmt.Sprint(want) {
+		t.Fatalf("recebido %v, esperado %v", got.snapshot(), want)
+	}
+	if st, _ := h.Stats("a"); st.Expired != 1 {
+		t.Fatalf("1 mensagem deveria ter caducado, stats %+v", st)
+	}
+}
+
+func TestHooksReportSentAndDropped(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
+	cfg := Config{
+		QueueSize: 1,
+		OnSent:    func(id string, m scheduler.Message) { record(id + ":enviada:" + string(m.Payload)) },
+		OnDrop: func(id string, m scheduler.Message, reason string) {
+			record(id + ":" + reason + ":" + string(m.Payload))
+		},
+	}
+	h := NewHub(cfg, nil)
+	send, entered, release, _ := blockingSender()
+	h.Add("a", send)
+
+	deliver(h, "a", []byte("1"))
+	<-entered
+	deliver(h, "a", []byte("2"))
+	deliver(h, "a", []byte("3"))
+	h.Deliver("a", scheduler.Message{Payload: []byte("velha"), Priority: scheduler.Critical, ExpiresAt: time.Now().Add(10 * time.Millisecond)})
+	deliver(h, "ninguem", []byte("4"))
+	time.Sleep(30 * time.Millisecond)
+
+	close(release)
+	waitFor(t, "os envios terminarem", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) == 5
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"a:fila_saida_cheia:2",
+		"ninguem:sem_fila:4",
+		"a:enviada:1",
+		"a:expirada:velha",
+		"a:enviada:3",
+	}
+	got := fmt.Sprint(events)
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Fatalf("faltou o evento %q em %v", w, events)
 		}
 	}
 }
