@@ -147,7 +147,7 @@ func TestIdleClientsAreForgotten(t *testing.T) {
 	}
 }
 
-func TestHighLoadReducesEveryClient(t *testing.T) {
+func TestHighLoadReducesOnlyReactions(t *testing.T) {
 	m := NewManager(testConfig())
 	a := m.Register("a")
 	b := m.Register("b")
@@ -158,12 +158,62 @@ func TestHighLoadReducesEveryClient(t *testing.T) {
 	if got := m.GlobalFactor(); got != 0.25 {
 		t.Fatalf("carga 4x acima do limiar deveria dar fator 0,25, obtido %v", got)
 	}
-	if a.Rate() != 2.5 || b.Rate() != 2.5 {
-		t.Fatalf("todos deveriam cair para 2,5 msgs/s, obtido %v e %v", a.Rate(), b.Rate())
+	if a.BulkRate() != 2.5 || b.BulkRate() != 2.5 {
+		t.Fatalf("as reacoes de todos deveriam cair para 2,5 msgs/s, obtido %v e %v", a.BulkRate(), b.BulkRate())
+	}
+	if a.Rate() != 10 || b.Rate() != 10 {
+		t.Fatalf("o trafego do jogo nao deveria sofrer a reducao global, obtido %v e %v", a.Rate(), b.Rate())
 	}
 
 	m.adjust(time.Second)
 	if got := m.GlobalFactor(); got != 0.5 {
 		t.Fatalf("com carga normal o fator deveria subir gradualmente para 0,5, obtido %v", got)
+	}
+}
+
+// Cenário encontrado pelo gerador de carga (TASK-SC04): com o broker
+// sobrecarregado por reações, um jogador normal reage e logo depois responde.
+// A reação não pode gastar a ficha da resposta.
+func TestReactionDoesNotConsumeAnswerToken(t *testing.T) {
+	m := NewManager(testConfig())
+	jogador := m.Register("jogador")
+
+	m.received.Add(100_000) // spam dos barulhentos: fator global mínimo
+	m.adjust(time.Second)
+
+	for i := 0; i < 50; i++ {
+		jogador.AllowTraffic(Bulk) // esgota o balde de reações
+	}
+	if got := jogador.AllowTraffic(Bulk); got != Throttled {
+		t.Fatalf("reacoes deveriam estar limitadas, obtido %v", got)
+	}
+	if got := jogador.AllowTraffic(Game); got != Allowed {
+		t.Fatalf("a resposta deveria passar mesmo com as reacoes esgotadas, obtido %v", got)
+	}
+}
+
+// Quem abusa continua penalizado nos dois baldes: o spam de reações também
+// reduz o limite das mensagens de jogo do barulhento, e o bloqueio vale para
+// tudo.
+func TestNoisyReactionsPenalizeBothBuckets(t *testing.T) {
+	m := NewManager(testConfig())
+	c := m.Register("barulhento")
+
+	for i := 0; i < 50; i++ {
+		c.AllowTraffic(Bulk)
+	}
+	m.adjust(time.Second)
+	if c.Rate() != 5 || c.BulkRate() != 5 {
+		t.Fatalf("penalidade deveria valer nos dois baldes, obtido jogo=%v reacoes=%v", c.Rate(), c.BulkRate())
+	}
+
+	for interval := 0; interval < 3; interval++ {
+		for i := 0; i < 50; i++ {
+			c.AllowTraffic(Bulk)
+		}
+		m.adjust(time.Second)
+	}
+	if got := c.AllowTraffic(Game); got != Blocked {
+		t.Fatalf("barulhento persistente deveria ser bloqueado tambem no jogo, obtido %v", got)
 	}
 }

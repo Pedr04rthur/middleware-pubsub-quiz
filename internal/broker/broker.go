@@ -112,7 +112,7 @@ func (b *Broker) Run() {
 			b.conn.WriteToUDP(msg.Serialize(), clienteAddr)
 			continue
 		}
-		if b.limitador.Allow(clienteAddr.String()) != ratelimit.Allowed {
+		if b.limitador.AllowTraffic(clienteAddr.String(), classeDeTrafego(msg)) != ratelimit.Allowed {
 			b.logf("Mensagem de %s descartada pelo Rate Limit\n", clienteAddr)
 			if msg.Command == protocol.CmdPublish {
 				b.metricas.Topics.PublishDropped(msg.Topic, DropRateLimit)
@@ -250,4 +250,13 @@ func (b *Broker) enviarAck(destino *net.UDPAddr, topico string) {
 func (b *Broker) enviarNack(destino *net.UDPAddr, topico string, motivo string) {
 	nack := &protocol.Message{Command: protocol.CmdNack, Topic: topico, Payload: []byte(motivo)}
 	b.conn.WriteToUDP(nack.Serialize(), destino)
+}
+
+// classeDeTrafego separa as reações (descartáveis) do tráfego do jogo no rate
+// limit, para que o spam de reações não gaste as fichas das respostas.
+func classeDeTrafego(msg *protocol.Message) ratelimit.Traffic {
+	if msg.Command == protocol.CmdPublish && scheduler.Classify(msg.Topic) == scheduler.Low {
+		return ratelimit.Bulk
+	}
+	return ratelimit.Game
 }

@@ -18,7 +18,9 @@ type Config struct {
 	MinRate float64
 
 	// HighLoadThreshold é o total de mensagens/s recebidas pelo broker a partir
-	// do qual ele é considerado sob alta carga e passa a reduzir os limites.
+	// do qual ele é considerado sob alta carga e passa a reduzir os limites de
+	// reações (tráfego Bulk) de todos os clientes. O tráfego do jogo não sofre
+	// essa redução.
 	HighLoadThreshold float64
 	// AdjustInterval é de quanto em quanto tempo os limites são recalculados.
 	AdjustInterval time.Duration
@@ -70,11 +72,26 @@ const (
 	Blocked
 )
 
-// Client guarda o Token Bucket individual de um cliente e seu histórico de abuso.
+// Traffic é a classe do tráfego de uma mensagem. Cada cliente tem um balde
+// por classe, para que as reações não consumam as fichas das respostas.
+type Traffic int
+
+const (
+	// Game é o tráfego do jogo: perguntas, respostas, placar e comandos de
+	// controle. Não sofre a redução global por carga, só a penalidade
+	// individual de quem abusa.
+	Game Traffic = iota
+	// Bulk é o tráfego descartável (reações). Sofre a redução global quando o
+	// broker está sobrecarregado e a penalidade individual.
+	Bulk
+)
+
+// Client guarda os Token Buckets individuais de um cliente e seu histórico de abuso.
 type Client struct {
 	ID      string
 	manager *Manager
-	bucket  *TokenBucket
+	bucket  *TokenBucket // tráfego do jogo
+	bulk    *TokenBucket // reações
 
 	rejected atomic.Int64
 	blocked  atomic.Bool
@@ -85,24 +102,39 @@ type Client struct {
 	noisyIntervals int
 }
 
-// Allow verifica se a próxima mensagem do cliente pode passar.
+// Allow verifica se a próxima mensagem de jogo do cliente pode passar.
 func (c *Client) Allow() Decision {
+	return c.AllowTraffic(Game)
+}
+
+// AllowTraffic verifica se a próxima mensagem da classe t pode passar.
+// Rejeições em qualquer classe contam para a penalidade do cliente.
+func (c *Client) AllowTraffic(t Traffic) Decision {
 	c.manager.received.Add(1)
 	c.lastSeen.Store(c.manager.now().UnixNano())
 
 	if c.blocked.Load() {
 		return Blocked
 	}
-	if c.bucket.Allow() {
+	b := c.bucket
+	if t == Bulk {
+		b = c.bulk
+	}
+	if b.Allow() {
 		return Allowed
 	}
 	c.rejected.Add(1)
 	return Throttled
 }
 
-// Rate retorna o limite atual de mensagens/s do cliente.
+// Rate retorna o limite atual de mensagens de jogo/s do cliente.
 func (c *Client) Rate() float64 {
 	return c.bucket.Rate()
+}
+
+// BulkRate retorna o limite atual de reações/s do cliente.
+func (c *Client) BulkRate() float64 {
+	return c.bulk.Rate()
 }
 
 // Manager mantém um Token Bucket por cliente e ajusta dinamicamente os limites
@@ -139,16 +171,23 @@ func (m *Manager) Register(id string) *Client {
 	}
 	c := &Client{ID: id, manager: m, penalty: 1}
 	c.lastSeen.Store(m.now().UnixNano())
-	rate, burst := m.limitsFor(c)
+	rate, burst := m.limitsFor(c, Game)
 	c.bucket = NewTokenBucket(rate, burst)
+	rate, burst = m.limitsFor(c, Bulk)
+	c.bulk = NewTokenBucket(rate, burst)
 	m.clients[id] = c
 	return c
 }
 
-// Allow verifica a mensagem do cliente identificado por id (em UDP, o
-// endereço de origem do pacote), registrando-o no primeiro pacote.
+// Allow verifica a mensagem de jogo do cliente identificado por id (em UDP,
+// o endereço de origem do pacote), registrando-o no primeiro pacote.
 func (m *Manager) Allow(id string) Decision {
 	return m.Register(id).Allow()
+}
+
+// AllowTraffic é Allow para uma classe de tráfego específica.
+func (m *Manager) AllowTraffic(id string, t Traffic) Decision {
+	return m.Register(id).AllowTraffic(t)
 }
 
 // ClientCount retorna quantos clientes estão sendo acompanhados.
@@ -223,8 +262,10 @@ func (m *Manager) adjust(elapsed time.Duration) {
 			c.blocked.Store(true)
 		}
 
-		rate, burst := m.limitsFor(c)
+		rate, burst := m.limitsFor(c, Game)
 		c.bucket.SetLimits(rate, burst)
+		rate, burst = m.limitsFor(c, Bulk)
+		c.bulk.SetLimits(rate, burst)
 	}
 }
 
@@ -243,9 +284,15 @@ func (m *Manager) updateGlobalFactor(load float64) {
 	}
 }
 
-// limitsFor deve ser chamado com m.mu travado.
-func (m *Manager) limitsFor(c *Client) (rate, burst float64) {
-	factor := m.globalFactor * c.penalty
+// limitsFor deve ser chamado com m.mu travado. A redução global por carga só
+// vale para as reações: se ela valesse para todos, um grupo barulhento que
+// sobrecarrega o broker com reações encolheria também o balde dos jogadores
+// normais, e uma reação deles roubaria a ficha da resposta (TASK-SC04).
+func (m *Manager) limitsFor(c *Client, t Traffic) (rate, burst float64) {
+	factor := c.penalty
+	if t == Bulk {
+		factor *= m.globalFactor
+	}
 	rate = math.Max(m.cfg.MinRate, m.cfg.BaseRate*factor)
 	burst = math.Max(1, m.cfg.Burst*factor)
 	return rate, burst
