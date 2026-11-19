@@ -1,0 +1,100 @@
+{
+  "ambiente": {
+    "so": "darwin",
+    "arquitetura": "arm64",
+    "cpus": 10,
+    "go": "go1.27.0",
+    "data": "2026-11-19 08:14"
+  },
+  "conexoes": [
+    {
+      "clientes": 8000,
+      "conectados": 8000,
+      "falhas": 0,
+      "tempo_conexao": "275ms",
+      "conexoes_por_s": 29097.861681073962,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 40000,
+        "min_ms": 0.283167,
+        "media_ms": 28.890649,
+        "p50_ms": 28.932208,
+        "p95_ms": 52.398833,
+        "p99_ms": 54.530708,
+        "max_ms": 55.651667
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 1325.8671875,
+      "goroutines": 32011,
+      "degradou": false
+    },
+    {
+      "clientes": 12000,
+      "conectados": 12000,
+      "falhas": 0,
+      "tempo_conexao": "568ms",
+      "conexoes_por_s": 21124.292033655398,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 60000,
+        "min_ms": 0.472875,
+        "media_ms": 53.823645,
+        "p50_ms": 53.902875,
+        "p95_ms": 97.106875,
+        "p99_ms": 101.433583,
+        "max_ms": 103.423667
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 1985.640625,
+      "goroutines": 48011,
+      "degradou": false
+    },
+    {
+      "clientes": 16000,
+      "conectados": 16000,
+      "falhas": 0,
+      "tempo_conexao": "2.77s",
+      "conexoes_por_s": 5775.478716120106,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 80000,
+        "min_ms": 0.523375,
+        "media_ms": 110.636308,
+        "p50_ms": 112.334875,
+        "p95_ms": 191.455417,
+        "p99_ms": 199.754125,
+        "max_ms": 206.377208
+      },
+      "failovers_falsos": 0,
+      "reenvios": 65,
+      "heap_mb": 2651.09375,
+      "goroutines": 64011,
+      "degradou": false
+    },
+    {
+      "clientes": 24000,
+      "conectados": 16890,
+      "falhas": 7110,
+      "tempo_conexao": "2m12.169s",
+      "conexoes_por_s": 127.79139021737689,
+      "entrega_perguntas": 0,
+      "latencia_pergunta": {
+        "amostras": 0,
+        "min_ms": 0,
+        "media_ms": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0,
+        "max_ms": 0
+      },
+      "failovers_falsos": 62456,
+      "reenvios": 2146789,
+      "heap_mb": 4014.2421875,
+      "goroutines": 65379,
+      "degradou": true,
+      "motivo": "7110 conexoes falharam; entrega de 0.00%; 62456 failovers falsos (heartbeats perdidos)"
+    }
+  ]
+}

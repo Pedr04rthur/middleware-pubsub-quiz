@@ -1,0 +1,990 @@
+{
+  "ambiente": {
+    "so": "darwin",
+    "arquitetura": "arm64",
+    "cpus": 10,
+    "go": "go1.27.0",
+    "data": "2026-11-19 08:09"
+  },
+  "ruido": [
+    {
+      "jogadores": 1000,
+      "barulhentos": 200,
+      "repeticoes": 3,
+      "p50_ms": [
+        4.681291,
+        5.877791
+      ],
+      "p95_ms": [
+        12.009333,
+        11.082875
+      ],
+      "p99_ms": [
+        12.99425,
+        12.038292
+      ],
+      "entrega_perguntas": [
+        1,
+        1
+      ],
+      "entrega_respostas": [
+        1,
+        1
+      ],
+      "pico_respostas_por_s": [
+        3372.5395780841022,
+        3375.878312388169
+      ],
+      "spam_contido": 0.9725,
+      "execucoes": [
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:53513",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "1000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 1200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "40ms",
+          "conexoes_por_s": 30147.12399451805,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.085583,
+                "media_ms": 4.912848,
+                "p50_ms": 4.234375,
+                "p95_ms": 11.45,
+                "p99_ms": 12.753875,
+                "max_ms": 13.243084
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.024625,
+                "media_ms": 0.138633,
+                "p50_ms": 0.088083,
+                "p95_ms": 0.21875,
+                "p99_ms": 0.949084,
+                "max_ms": 9.414
+              },
+              "pico_respostas_por_s": 3361.898262234788,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 5000,
+              "reacoes_contadas": 5000,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.285708,
+                "media_ms": 5.529679,
+                "p50_ms": 5.420333,
+                "p95_ms": 10.845,
+                "p99_ms": 11.955792,
+                "max_ms": 12.567125
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.035625,
+                "media_ms": 0.281727,
+                "p50_ms": 0.096209,
+                "p95_ms": 0.747,
+                "p99_ms": 5.243084,
+                "max_ms": 10.630417
+              },
+              "pico_respostas_por_s": 3375.878312388169,
+              "reacoes_barulhentos": 240000,
+              "reacoes_jogadores": 6000,
+              "reacoes_contadas": 12600,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido1/reacoes": {
+                  "rate_limit": 233400
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 261010,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 20024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 184.80297088623047,
+            "heap_pico_mb": 253.37496185302734,
+            "memoria_do_so_mb": 291.6897659301758,
+            "goroutines": 4620,
+            "goroutines_pico": 4622,
+            "ciclos_gc": 8,
+            "pausa_gc_total_ms": 0.92883,
+            "cpu_s": 8.758845,
+            "cpu_pct": 113.81338283181492,
+            "cpu_pct_pico": 113.81338283181492,
+            "cpu_disponivel": true
+          }
+        },
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:54123",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "1000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 1200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "46ms",
+          "conexoes_por_s": 26326.85541310752,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.11675,
+                "media_ms": 5.538742,
+                "p50_ms": 4.681291,
+                "p95_ms": 12.009333,
+                "p99_ms": 12.99425,
+                "max_ms": 13.394125
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.024167,
+                "media_ms": 0.165308,
+                "p50_ms": 0.089541,
+                "p95_ms": 0.220458,
+                "p99_ms": 2.443083,
+                "max_ms": 9.72275
+              },
+              "pico_respostas_por_s": 3372.5395780841022,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 5000,
+              "reacoes_contadas": 5000,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.240541,
+                "media_ms": 6.571333,
+                "p50_ms": 5.877791,
+                "p95_ms": 13.188333,
+                "p99_ms": 15.880708,
+                "max_ms": 16.547583
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.036375,
+                "media_ms": 0.265755,
+                "p50_ms": 0.092209,
+                "p95_ms": 0.669042,
+                "p99_ms": 5.054292,
+                "max_ms": 13.734417
+              },
+              "pico_respostas_por_s": 3392.936390945368,
+              "reacoes_barulhentos": 240000,
+              "reacoes_jogadores": 6000,
+              "reacoes_contadas": 12600,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido2/reacoes": {
+                  "rate_limit": 233400
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 261010,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 20024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 210.0010528564453,
+            "heap_pico_mb": 225.03926849365234,
+            "memoria_do_so_mb": 348.31868743896484,
+            "goroutines": 4620,
+            "goroutines_pico": 4622,
+            "ciclos_gc": 10,
+            "pausa_gc_total_ms": 1.238497,
+            "cpu_s": 20.280437,
+            "cpu_pct": 136.66331138088495,
+            "cpu_pct_pico": 136.66331138088495,
+            "cpu_disponivel": true
+          }
+        },
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:59975",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "1000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 1200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "42ms",
+          "conexoes_por_s": 28781.49303947173,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.093709,
+                "media_ms": 6.744148,
+                "p50_ms": 6.257416,
+                "p95_ms": 13.036917,
+                "p99_ms": 13.897,
+                "max_ms": 14.139834
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.032417,
+                "media_ms": 0.171044,
+                "p50_ms": 0.096375,
+                "p95_ms": 0.228917,
+                "p99_ms": 1.896,
+                "max_ms": 12.232625
+              },
+              "pico_respostas_por_s": 3377.082491426668,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 5000,
+              "reacoes_contadas": 5000,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 5000,
+              "perguntas_recebidas": 5000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 5000,
+                "min_ms": 0.85075,
+                "media_ms": 6.120439,
+                "p50_ms": 6.064167,
+                "p95_ms": 11.082875,
+                "p99_ms": 12.038292,
+                "max_ms": 12.542042
+              },
+              "respostas_enviadas": 5000,
+              "respostas_recebidas": 5000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 5000,
+                "min_ms": 0.039917,
+                "media_ms": 0.246135,
+                "p50_ms": 0.095125,
+                "p95_ms": 1.063042,
+                "p99_ms": 2.218875,
+                "max_ms": 9.196
+              },
+              "pico_respostas_por_s": 3369.883936984855,
+              "reacoes_barulhentos": 240000,
+              "reacoes_jogadores": 6000,
+              "reacoes_contadas": 12600,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido3/reacoes": {
+                  "rate_limit": 233400
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 261010,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 20024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 251.2567138671875,
+            "heap_pico_mb": 251.2567138671875,
+            "memoria_do_so_mb": 348.31868743896484,
+            "goroutines": 4620,
+            "goroutines_pico": 4622,
+            "ciclos_gc": 12,
+            "pausa_gc_total_ms": 1.734747,
+            "cpu_s": 31.938559,
+            "cpu_pct": 131.09742881683832,
+            "cpu_pct_pico": 184.07960199004975,
+            "cpu_disponivel": true
+          }
+        }
+      ]
+    },
+    {
+      "jogadores": 3000,
+      "barulhentos": 200,
+      "repeticoes": 3,
+      "p50_ms": [
+        13.167375,
+        10.629417
+      ],
+      "p95_ms": [
+        23.887833,
+        16.593375
+      ],
+      "p99_ms": [
+        25.369041,
+        17.667875
+      ],
+      "entrega_perguntas": [
+        1,
+        1
+      ],
+      "entrega_respostas": [
+        1,
+        1
+      ],
+      "pico_respostas_por_s": [
+        10091.315201211088,
+        10083.549230245213
+      ],
+      "spam_contido": 0.9858333923608652,
+      "execucoes": [
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:51501",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "3000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 3200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "101ms",
+          "conexoes_por_s": 31670.559984688865,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 0.915084,
+                "media_ms": 13.42561,
+                "p50_ms": 13.293291,
+                "p95_ms": 23.887833,
+                "p99_ms": 26.369875,
+                "max_ms": 27.301709
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.023167,
+                "media_ms": 0.32409,
+                "p50_ms": 0.049917,
+                "p95_ms": 0.286917,
+                "p99_ms": 9.518292,
+                "max_ms": 21.641625
+              },
+              "pico_respostas_por_s": 10091.315201211088,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 14987,
+              "reacoes_contadas": 14987,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 1.571542,
+                "media_ms": 9.974195,
+                "p50_ms": 10.70875,
+                "p95_ms": 16.593375,
+                "p99_ms": 17.667875,
+                "max_ms": 18.327291
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.023375,
+                "media_ms": 0.257527,
+                "p50_ms": 0.046708,
+                "p95_ms": 0.84275,
+                "p99_ms": 5.672209,
+                "max_ms": 15.049541
+              },
+              "pico_respostas_por_s": 10079.627647265528,
+              "reacoes_barulhentos": 240001,
+              "reacoes_jogadores": 18000,
+              "reacoes_contadas": 21400,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido1/reacoes": {
+                  "rate_limit": 236601
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 302998,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 60024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 651.9449157714844,
+            "heap_pico_mb": 651.9449157714844,
+            "memoria_do_so_mb": 721.0765762329102,
+            "goroutines": 12620,
+            "goroutines_pico": 12622,
+            "ciclos_gc": 16,
+            "pausa_gc_total_ms": 2.850954,
+            "cpu_s": 48.707442,
+            "cpu_pct": 154.4838582119738,
+            "cpu_pct_pico": 218.59582542694497,
+            "cpu_disponivel": true
+          }
+        },
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:64665",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "3000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 3200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "105ms",
+          "conexoes_por_s": 30361.67174438744,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 0.099416,
+                "media_ms": 12.980082,
+                "p50_ms": 12.7755,
+                "p95_ms": 23.181208,
+                "p99_ms": 24.790208,
+                "max_ms": 25.403541
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.02525,
+                "media_ms": 0.28765,
+                "p50_ms": 0.049333,
+                "p95_ms": 0.259,
+                "p99_ms": 8.654125,
+                "max_ms": 21.952708
+              },
+              "pico_respostas_por_s": 10090.591107028862,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 15000,
+              "reacoes_contadas": 15000,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 0.744625,
+                "media_ms": 9.186492,
+                "p50_ms": 9.122916,
+                "p95_ms": 15.915916,
+                "p99_ms": 16.721333,
+                "max_ms": 17.312
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.022584,
+                "media_ms": 0.240881,
+                "p50_ms": 0.045583,
+                "p95_ms": 0.814375,
+                "p99_ms": 5.681666,
+                "max_ms": 13.481916
+              },
+              "pico_respostas_por_s": 10083.549230245213,
+              "reacoes_barulhentos": 240001,
+              "reacoes_jogadores": 18000,
+              "reacoes_contadas": 21400,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido2/reacoes": {
+                  "rate_limit": 236601
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 303011,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 60024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 652.52587890625,
+            "heap_pico_mb": 655.6148986816406,
+            "memoria_do_so_mb": 948.3129653930664,
+            "goroutines": 12620,
+            "goroutines_pico": 12622,
+            "ciclos_gc": 18,
+            "pausa_gc_total_ms": 3.773039,
+            "cpu_s": 66.261068,
+            "cpu_pct": 153.5569243445805,
+            "cpu_pct_pico": 216.64071491435922,
+            "cpu_disponivel": true
+          }
+        },
+        {
+          "configuracao": {
+            "barulhentos": "200",
+            "broker": "127.0.0.1:58600",
+            "intervalo_pergunta": "2s",
+            "janela_rajada": "300ms",
+            "jogadores": "3000",
+            "perguntas_por_fase": "5",
+            "reacoes_por_barulhento": "100",
+            "reacoes_por_jogador": "0.5"
+          },
+          "conexoes": 3200,
+          "falhas_conexao": 0,
+          "tempo_conexao": "99ms",
+          "conexoes_por_s": 32302.105441138247,
+          "fases": [
+            {
+              "nome": "sem_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 0.111666,
+                "media_ms": 13.417548,
+                "p50_ms": 13.167375,
+                "p95_ms": 24.123625,
+                "p99_ms": 25.369041,
+                "max_ms": 25.8155
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.02475,
+                "media_ms": 0.35856,
+                "p50_ms": 0.047666,
+                "p95_ms": 0.742,
+                "p99_ms": 9.328166,
+                "max_ms": 23.275292
+              },
+              "pico_respostas_por_s": 10095.057585994118,
+              "reacoes_barulhentos": 0,
+              "reacoes_jogadores": 15000,
+              "reacoes_contadas": 15000,
+              "resumos": 11
+            },
+            {
+              "nome": "com_barulho",
+              "perguntas_enviadas": 5,
+              "perguntas_esperadas": 15000,
+              "perguntas_recebidas": 15000,
+              "entrega_perguntas": 1,
+              "latencia_pergunta": {
+                "amostras": 15000,
+                "min_ms": 1.452375,
+                "media_ms": 10.200567,
+                "p50_ms": 10.629417,
+                "p95_ms": 17.433083,
+                "p99_ms": 18.25925,
+                "max_ms": 18.6705
+              },
+              "respostas_enviadas": 15000,
+              "respostas_recebidas": 15000,
+              "entrega_respostas": 1,
+              "latencia_resposta": {
+                "amostras": 15000,
+                "min_ms": 0.023125,
+                "media_ms": 0.268568,
+                "p50_ms": 0.04775,
+                "p95_ms": 0.783625,
+                "p99_ms": 6.616375,
+                "max_ms": 15.074334
+              },
+              "pico_respostas_por_s": 10110.885542497339,
+              "reacoes_barulhentos": 240000,
+              "reacoes_jogadores": 18000,
+              "reacoes_contadas": 21400,
+              "resumos": 13,
+              "descartes_broker": {
+                "quiz/ruido3/reacoes": {
+                  "rate_limit": 236600
+                }
+              }
+            }
+          ],
+          "biblioteca_cliente": {
+            "Published": 303010,
+            "PublishNacks": 0,
+            "PublishDropped": 0,
+            "Received": 60024,
+            "InboxDropped": 0,
+            "Unroutable": 0,
+            "Retransmitted": 0,
+            "Failovers": 0,
+            "RestoreFailed": 0
+          },
+          "recursos_gerador": {
+            "heap_mb": 640.4390106201172,
+            "heap_pico_mb": 656.1862945556641,
+            "memoria_do_so_mb": 948.3754653930664,
+            "goroutines": 12620,
+            "goroutines_pico": 12622,
+            "ciclos_gc": 21,
+            "pausa_gc_total_ms": 5.465788,
+            "cpu_s": 83.741209,
+            "cpu_pct": 156.20550947747682,
+            "cpu_pct_pico": 203.82165605095543,
+            "cpu_disponivel": true
+          }
+        }
+      ]
+    }
+  ],
+  "failover": [
+    {
+      "nome": "padrao",
+      "jogadores": 1000,
+      "heartbeat_intervalo": "250ms",
+      "heartbeat_timeout": "1s",
+      "migraram": 1001,
+      "sem_recuperar": 0,
+      "interrupcao": {
+        "amostras": 1000,
+        "min_ms": 1362.549,
+        "media_ms": 1386.210119,
+        "p50_ms": 1372.01825,
+        "p95_ms": 1500.04375,
+        "p99_ms": 1507.211959,
+        "max_ms": 1512.415959
+      },
+      "downtime_sdk": {
+        "amostras": 1001,
+        "min_ms": 1000.433125,
+        "media_ms": 1253.617742,
+        "p50_ms": 1260.024291,
+        "p95_ms": 1266.827833,
+        "p99_ms": 1267.48425,
+        "max_ms": 1268.804125
+      },
+      "restauracao_sdk": {
+        "amostras": 1001,
+        "min_ms": 0.398125,
+        "media_ms": 10.33912,
+        "p50_ms": 10.073792,
+        "p95_ms": 16.977208,
+        "p99_ms": 17.62,
+        "max_ms": 18.171833
+      },
+      "perguntas_publicadas": 64,
+      "perguntas_esperadas": 64000,
+      "perguntas_recebidas": 53884,
+      "perda": 0.1580625,
+      "perdidas_por_jogador": 10.116,
+      "esperado_pela_interrupcao": 10.976146,
+      "intervalo_pergunta": "125ms",
+      "perdidas_no_apresentador": 0,
+      "latencia_antes": {
+        "amostras": 23000,
+        "min_ms": 0.22425,
+        "media_ms": 7.90563,
+        "p50_ms": 7.950583,
+        "p95_ms": 13.966917,
+        "p99_ms": 14.930292,
+        "max_ms": 15.8805
+      },
+      "latencia_depois": {
+        "amostras": 30884,
+        "min_ms": 0.209166,
+        "media_ms": 7.747267,
+        "p50_ms": 7.620125,
+        "p95_ms": 13.949208,
+        "p99_ms": 15.024792,
+        "max_ms": 16.002
+      }
+    },
+    {
+      "nome": "rapido",
+      "jogadores": 1000,
+      "heartbeat_intervalo": "100ms",
+      "heartbeat_timeout": "400ms",
+      "migraram": 1001,
+      "sem_recuperar": 0,
+      "interrupcao": {
+        "amostras": 1000,
+        "min_ms": 621.479416,
+        "media_ms": 707.229107,
+        "p50_ms": 744.674167,
+        "p95_ms": 754.800208,
+        "p99_ms": 757.055875,
+        "max_ms": 758.253459
+      },
+      "downtime_sdk": {
+        "amostras": 1001,
+        "min_ms": 400.355292,
+        "media_ms": 522.761311,
+        "p50_ms": 522.806917,
+        "p95_ms": 535.721375,
+        "p99_ms": 539.901666,
+        "max_ms": 540.770666
+      },
+      "restauracao_sdk": {
+        "amostras": 1001,
+        "min_ms": 0.349292,
+        "media_ms": 20.863277,
+        "p50_ms": 22.0115,
+        "p95_ms": 23.953459,
+        "p99_ms": 25.760292,
+        "max_ms": 34.67875
+      },
+      "perguntas_publicadas": 64,
+      "perguntas_esperadas": 64000,
+      "perguntas_recebidas": 59342,
+      "perda": 0.07278125000000002,
+      "perdidas_por_jogador": 4.658,
+      "esperado_pela_interrupcao": 5.957393336,
+      "intervalo_pergunta": "125ms",
+      "perdidas_no_apresentador": 0,
+      "latencia_antes": {
+        "amostras": 23000,
+        "min_ms": 0.136125,
+        "media_ms": 6.745524,
+        "p50_ms": 6.264166,
+        "p95_ms": 13.501875,
+        "p99_ms": 15.161458,
+        "max_ms": 16.64125
+      },
+      "latencia_depois": {
+        "amostras": 36342,
+        "min_ms": 0.17025,
+        "media_ms": 7.262605,
+        "p50_ms": 7.13875,
+        "p95_ms": 13.540459,
+        "p99_ms": 14.985417,
+        "max_ms": 16.35
+      }
+    }
+  ],
+  "conexoes": [
+    {
+      "clientes": 1000,
+      "conectados": 1000,
+      "falhas": 0,
+      "tempo_conexao": "33ms",
+      "conexoes_por_s": 29937.094679804064,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 5000,
+        "min_ms": 0.212583,
+        "media_ms": 5.769751,
+        "p50_ms": 5.918583,
+        "p95_ms": 10.228917,
+        "p99_ms": 10.710792,
+        "max_ms": 10.996292
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 373.046875,
+      "goroutines": 6011,
+      "degradou": false
+    },
+    {
+      "clientes": 2000,
+      "conectados": 2000,
+      "falhas": 0,
+      "tempo_conexao": "70ms",
+      "conexoes_por_s": 28376.508711573984,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 10000,
+        "min_ms": 0.282083,
+        "media_ms": 10.605739,
+        "p50_ms": 10.93,
+        "p95_ms": 18.009375,
+        "p99_ms": 20.213,
+        "max_ms": 20.937458
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 537.953125,
+      "goroutines": 10011,
+      "degradou": false
+    },
+    {
+      "clientes": 4000,
+      "conectados": 4000,
+      "falhas": 0,
+      "tempo_conexao": "130ms",
+      "conexoes_por_s": 30701.22566507643,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 20000,
+        "min_ms": 0.203042,
+        "media_ms": 11.477653,
+        "p50_ms": 11.464125,
+        "p95_ms": 20.656625,
+        "p99_ms": 21.464375,
+        "max_ms": 21.967792
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 872.9296875,
+      "goroutines": 18011,
+      "degradou": false
+    },
+    {
+      "clientes": 8000,
+      "conectados": 8000,
+      "falhas": 0,
+      "tempo_conexao": "380ms",
+      "conexoes_por_s": 21026.717035536523,
+      "entrega_perguntas": 1,
+      "latencia_pergunta": {
+        "amostras": 40000,
+        "min_ms": 1.212416,
+        "media_ms": 33.527283,
+        "p50_ms": 33.2475,
+        "p95_ms": 58.675125,
+        "p99_ms": 65.520583,
+        "max_ms": 67.982875
+      },
+      "failovers_falsos": 0,
+      "reenvios": 0,
+      "heap_mb": 1549.8984375,
+      "goroutines": 34011,
+      "degradou": false
+    },
+    {
+      "clientes": 12000,
+      "conectados": 11769,
+      "falhas": 231,
+      "tempo_conexao": "14.094s",
+      "conexoes_por_s": 835.0240524045186,
+      "entrega_perguntas": 0.027343019797773812,
+      "latencia_pergunta": {
+        "amostras": 1609,
+        "min_ms": 390.913208,
+        "media_ms": 461.070456,
+        "p50_ms": 466.606958,
+        "p95_ms": 518.523875,
+        "p99_ms": 521.985833,
+        "max_ms": 522.586375
+      },
+      "failovers_falsos": 27363,
+      "reenvios": 92397,
+      "heap_mb": 3466.0703125,
+      "goroutines": 53476,
+      "degradou": true,
+      "motivo": "231 conexoes falharam; entrega de 2.73%; p99 de 522 ms; 27363 failovers falsos (heartbeats perdidos)"
+    }
+  ]
+}
